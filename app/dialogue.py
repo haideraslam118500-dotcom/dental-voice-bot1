@@ -11,6 +11,11 @@ MENU_GREETING = (
     "appointment."
 )
 
+SILENCE_REPROMPT = (
+    "Hello, I’m still on the line. Let me know if you’d like our opening hours, our address, our "
+    "prices, or to book an appointment."
+)
+
 HOLDERS = [
     "Okay, that's fine.",
     "Yeah, sure.",
@@ -84,6 +89,10 @@ ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
 
 def build_menu_prompt() -> str:
     return MENU_GREETING
+
+
+def compose_initial_reprompt() -> str:
+    return SILENCE_REPROMPT
 
 
 def pick_holder() -> str:

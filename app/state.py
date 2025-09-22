@@ -22,6 +22,7 @@ class CallState:
     final_goodbye: Optional[str] = None
     metadata: Dict[str, Optional[str]] = field(default_factory=dict)
     has_greeted: bool = False
+    prompted_after_greeting: bool = False
 
     def add_system_line(self, text: str) -> None:
         text = text.strip()

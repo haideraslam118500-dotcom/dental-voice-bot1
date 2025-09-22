@@ -6,6 +6,7 @@ from app.twiml import (
     gather_for_follow_up,
     gather_for_intent,
     gather_for_name,
+    gather_for_time,
     respond_with_goodbye,
 )
 
@@ -85,8 +86,18 @@ def test_booking_confirmation_mentions_time_and_name():
     assert "Sam" in text
 
 
-def test_goodbye_twiml_hangs_up():
+def test_booking_time_prompt_is_speech_only():
     random.seed(6)
+    prompt = dialogue.compose_booking_time_prompt("Sam")
+    twiml = gather_for_time(prompt, VOICE, LANG)
+    gather = _get_gather(twiml)
+    assert gather.attrib["input"] == "speech"
+    assert "numDigits" not in gather.attrib
+    assert gather.attrib["action"] == "/gather-booking"
+
+
+def test_goodbye_twiml_hangs_up():
+    random.seed(7)
     message = dialogue.pick_goodbye()
     twiml = respond_with_goodbye(message, VOICE, LANG)
     root = ET.fromstring(twiml)

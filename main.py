@@ -59,6 +59,10 @@ def _initial_prompt() -> str:
     return dialogue.build_menu_prompt()
 
 
+def _initial_reprompt() -> str:
+    return dialogue.compose_initial_reprompt()
+
+
 def _continuation_prompt() -> str:
     holder = dialogue.pick_holder()
     return (
@@ -117,6 +121,7 @@ def _reset_state(state: CallState, form_data) -> None:
     state.transcript_file = None
     state.final_goodbye = None
     state.has_greeted = False
+    state.prompted_after_greeting = False
     state.metadata = {
         "from": form_data.get("From"),
         "to": form_data.get("To"),
@@ -285,6 +290,13 @@ async def voice_webhook(request: Request) -> Response:
         logger.info("Incoming call", extra={"call_sid": call_sid})
         return _twiml_response(gather_for_intent(prompt, voice, language))
 
+    if not state.prompted_after_greeting and state.awaiting == "intent":
+        prompt = _initial_reprompt()
+        state.add_system_line(prompt)
+        state.prompted_after_greeting = True
+        logger.info("Silence after greeting", extra={"call_sid": call_sid})
+        return _twiml_response(gather_for_intent(prompt, voice, language))
+
     stage = state.awaiting if state.awaiting in {"anything_else", "name", "time"} else "intent"
     return _handle_silence(state, stage)
 
@@ -331,8 +343,7 @@ async def gather_booking_route(request: Request) -> Response:
 
     state = state_store.get_or_create(call_sid)
     speech_result = (form.get("SpeechResult") or "").strip()
-    digits = (form.get("Digits") or "").strip()
-    user_input = speech_result or digits
+    user_input = speech_result
 
     if not user_input:
         stage = state.awaiting if state.awaiting in {"name", "time"} else "intent"
