@@ -20,6 +20,8 @@ A FastAPI + Twilio voice assistant that behaves like a natural, speech-first den
   - If a day is full, it suggests the next available slot.
   - Availability dates are spoken naturally: “today”, “tomorrow”, “this Thursday”, or “Thursday the 25th”.
   - Times in prompts are spoken in 12-hour format (e.g., 9am, 1pm, 1:30pm).
+  - Light “thinking” fillers (e.g., “Okay, one moment…”, “Let me check…”) play before longer replies like slot listings so there’s never an awkward silence.
+  - Varied backchannels and clarifiers keep the receptionist warm and resilient to callers with strong accents or broken English.
   - The bot understands choices like “4:30” or “4 pm” and matches them to real available slots.
   - Saying “any time / anytime / whenever” picks the first available slot for that day.
   - Goodbyes are always spoken (Say + short Pause) and the call ends cleanly without looping.
@@ -57,9 +59,9 @@ A sample `.env.example` is included. Copy it to `.env` and adjust values as need
 practice_name: "Oak Dental"
 voice: "Polly.Amy"
 language: "en-GB"
-hours: "We’re open Monday to Friday nine to five; Saturday ten to one; Sundays and bank holidays closed."
-address: "12 High Street, Oakford, OX1 2AB."
-prices: "Check-up forty five pounds, hygiene sixty five, whitening from two hundred and fifty."
+hours: "We’re open Monday to Friday nine to five, Saturday nine to one. Closed Sundays and bank holidays."
+address: "We’re at 12 High Street, Oakford, OX1 2AB. Entrance next to the pharmacy."
+prices: "A routine check-up is forty five pounds. Hygiene is sixty five. Whitening starts from two hundred and fifty."
 ```
 
 Update these values to match your practice. `TTS_VOICE`/`TTS_LANG` in the environment always take precedence; if neither config nor environment specify a voice the app falls back to `alice` / `en-GB`.

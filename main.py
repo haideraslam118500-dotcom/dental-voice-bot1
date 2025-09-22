@@ -7,7 +7,7 @@ from collections import deque
 from datetime import datetime, timezone
 from itertools import cycle
 from threading import Lock
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -15,7 +15,14 @@ from twilio.twiml.voice_response import VoiceResponse
 
 from app.config import get_settings
 from app import nlp, schedule
-from app.dialogue import CONFIRM_TEMPLATES, DISCLAIMER_LINE, GREETINGS
+from app.dialogue import (
+    CONFIRM_TEMPLATES,
+    DISCLAIMER_LINE,
+    GREETINGS,
+    THINKING_FILLERS,
+    pick_clarifier,
+    pick_holder,
+)
 from app.intent import extract_appt_type, parse_intent
 from app.logging_config import setup_logging
 from app.persistence import (
@@ -48,11 +55,11 @@ _greeting_lock = Lock()
 _greeting_queue: deque[str] = deque()
 
 MENU_STATEMENT = "I can help with our hours, address, prices, or book you in."
-CLARIFY_PROMPT = "Would you like our hours, address, prices, or to book an appointment?"
+CLARIFY_PROMPT = "I didn’t quite catch that — would you like our hours, address, prices, or to book an appointment?"
 ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
 BOOKING_TIME_PROMPT = "Sure, let's find you a time. What day and time works for you?"
 BOOKING_NAME_PROMPT = "What's the name for the appointment?"
-BOOKING_NAME_REPROMPT = "Could I take the name for the appointment?"
+BOOKING_NAME_REPROMPT = "Sorry, could I take the name for the appointment?"
 BOOKING_TIME_PROMPT_TEMPLATE = "Thanks {name}. What day and time works for you?"
 BOOKING_TIME_REPROMPT = "What day and time would you like to come in?"
 BOOKING_CONFIRM_REPROMPT = "Should I pencil that appointment in for you?"
@@ -67,11 +74,10 @@ INFO_LINES = {
 }
 
 GOODBYES = [
-    "Okay, have a lovely day. Goodbye.",
-    "Thanks for calling, take care. Goodbye.",
-    "Alright then, wishing you a wonderful day. Goodbye.",
-    "Thanks again for calling. Speak soon. Goodbye.",
-    "Take care and enjoy the rest of your day. Goodbye.",
+    "Okay, thanks for calling — have a lovely day. Goodbye.",
+    "Alright, appreciate the call. Take care, goodbye.",
+    "Thanks for calling. Have a great day. Goodbye.",
+    "Cheers for calling. Bye for now.",
 ]
 _goodbye_cycle = cycle(GOODBYES)
 
@@ -115,6 +121,10 @@ ANYTIME_PHRASES = {
     "whenever works for me",
     "whatever time works",
 }
+
+
+PromptSegment = Tuple[str, str]
+PromptPayload = Union[str, Sequence[PromptSegment]]
 
 
 def _get_active_voice() -> str:
@@ -269,7 +279,7 @@ def _build_opening_prompt(state: Dict[str, Any]) -> str:
 
 
 def create_gather_twiml(
-    prompt: str,
+    prompt: PromptPayload,
     *,
     action: str,
     voice: str,
@@ -291,13 +301,26 @@ def create_gather_twiml(
     if hints:
         gather_kwargs["hints"] = hints
     gather = response.gather(**gather_kwargs)
-    _say_with_voice(
-        gather.say,
-        prompt,
-        preferred_voice=voice,
-        language=language,
-        call_sid=call_sid,
-    )
+    if isinstance(prompt, str):
+        _say_with_voice(
+            gather.say,
+            prompt,
+            preferred_voice=voice,
+            language=language,
+            call_sid=call_sid,
+        )
+    else:
+        for kind, value in prompt:
+            if kind == "say":
+                _say_with_voice(
+                    gather.say,
+                    value,
+                    preferred_voice=voice,
+                    language=language,
+                    call_sid=call_sid,
+                )
+            elif kind == "pause":
+                gather.pause(length=value)
     return str(response)
 
 
@@ -316,7 +339,7 @@ def create_goodbye_twiml(
         language=language,
         call_sid=call_sid,
     )
-    response.pause(length="1")
+    response.pause(length="0.4")
     response.hangup()
     return str(response)
 
@@ -343,14 +366,31 @@ def _remember_caller_line(state: Dict[str, Any], text: str) -> None:
             transcript_add(call_sid, "Caller", text)
 
 
+def _prompt_to_text(prompt: PromptPayload) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    return " ".join(part for kind, part in prompt if kind == "say")
+
+
+def _with_ack(text: str, chance: float = 0.7) -> str:
+    if not text or chance <= 0:
+        return text
+    if random.random() >= chance:
+        return text
+    holder = pick_holder().strip()
+    if not holder:
+        return text
+    return f"{holder} {text}"
+
+
 def _respond_with_gather(
     state: Dict[str, Any],
-    prompt: str,
+    prompt: PromptPayload,
     *,
     action: str = "/gather-intent",
     hints: Optional[str] = None,
 ) -> Response:
-    _remember_agent_line(state, prompt)
+    _remember_agent_line(state, _prompt_to_text(prompt))
     twiml = create_gather_twiml(
         prompt,
         action=action,
@@ -379,19 +419,28 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
 
 
 def _booking_type_prompt() -> str:
-    return "Sure, what type of appointment would you like? For example check-up, hygiene, or whitening?"
+    return _with_ack(
+        "What type of appointment would you like? For example check-up, hygiene, or whitening?",
+        0.85,
+    )
 
 
 def _booking_type_reprompt() -> str:
-    return "We can do check-up, hygiene, whitening, filling, or emergency. Which would you like?"
+    return _with_ack(
+        "We can do check-up, hygiene, whitening, filling, or emergency. Which would you like?",
+        0.85,
+    )
 
 
 def _booking_date_prompt(appt_type: str) -> str:
-    return f"Great, a {appt_type} — what day works best for you?"
+    return _with_ack(f"Great, a {appt_type} — what day works best for you?", 0.85)
 
 
 def _booking_date_reprompt() -> str:
-    return "Which day works best for you? You can say tomorrow or a weekday like Wednesday."
+    return _with_ack(
+        "Which day works best for you? You can say tomorrow or a weekday like Wednesday.",
+        0.8,
+    )
 
 
 def _format_times(slots: Sequence[str]) -> str:
@@ -407,33 +456,47 @@ def _format_times(slots: Sequence[str]) -> str:
     return ", ".join(spoken[:-1]) + f", or {spoken[-1]}"
 
 
-def _booking_time_prompt(date: str, slots: Sequence[str]) -> str:
+def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
     joined = _format_times(list(slots))
     if not joined:
-        return "I couldn't see any free times on that day. Would another day work?"
-    return f"On {date}, we have {joined}. Which time works for you?"
+        message = _with_ack(
+            "I couldn't see any free times on that day. Would another day work?",
+            0.7,
+        )
+        return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.5)
+    base = _with_ack(f"On {date}, we have {joined}. Which time works for you?", 0.9)
+    return nlp.maybe_prefix_with_filler(base, THINKING_FILLERS, chance=0.8)
 
 
-def _booking_time_reprompt(slots: Sequence[str]) -> str:
+def _booking_time_reprompt(slots: Sequence[str]) -> PromptPayload:
     cleaned = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
     if cleaned:
         preview = ", ".join(cleaned[:3])
-        return f"Times available are {preview}. Which would you like?"
-    return "What time suits you? You can say nine a m, eleven a m, or two thirty p m."
+        prompt = f"Times available are {preview}. Which would you like?"
+    else:
+        prompt = "What time suits you? You can say nine a m, eleven a m, or two thirty p m."
+    clarifier = pick_clarifier()
+    if clarifier:
+        prompt = f"{clarifier} {prompt}"
+    prompt = _with_ack(prompt, 0.7)
+    return nlp.maybe_prefix_with_filler(prompt, THINKING_FILLERS, chance=0.5)
 
 
 def _booking_name_prompt(time: str) -> str:
-    return f"Okay, {nlp.hhmm_to_12h(time)} noted. And your name please?"
+    base = f"Okay, {nlp.hhmm_to_12h(time)} noted. And your name please?"
+    return _with_ack(base, 0.75)
 
 
-def _booking_confirm_prompt(state: Dict[str, Any]) -> str:
+def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
     spoken_time = (
         nlp.hhmm_to_12h(state["booking_time"]) if state.get("booking_time") else state.get("booking_time", "")
     )
-    return (
+    message = (
         f"Great, {state['caller_name']}. Shall I book you in for {state['booking_appt_type']} "
         f"on {state['booking_date']} at {spoken_time}?"
     )
+    message = _with_ack(message, 0.7)
+    return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.6)
 
 
 def _booking_confirmed_message(state: Dict[str, Any]) -> str:
@@ -443,7 +506,7 @@ def _booking_confirmed_message(state: Dict[str, Any]) -> str:
         type=state["booking_appt_type"],
         name=state["caller_name"] or "",
     )
-    return f"{msg} Is there anything else I can help you with?"
+    return _with_ack(f"{msg} Is there anything else I can help you with?", 0.6)
 
 
 def _reset_booking_context(state: Dict[str, Any]) -> None:
@@ -491,27 +554,36 @@ def _handle_availability_request(state: Dict[str, Any], user_input: str) -> Resp
         state["retries"] = 0
         state["booking_date"] = None
         state["booking_available_times"] = []
-        return _respond_with_gather(
-            state,
-            "Sure — which day are you thinking of? You can say tomorrow or a weekday like Wednesday.",
-            action="/gather-booking",
+        prompt = nlp.maybe_prefix_with_filler(
+            _with_ack(
+                "Which day are you thinking of? You can say tomorrow or a weekday like Wednesday.",
+                0.85,
+            ),
+            THINKING_FILLERS,
+            chance=0.6,
         )
+        return _respond_with_gather(state, prompt, action="/gather-booking")
 
     slots = _available_slots_for_date(date)
     if not slots:
         nxt = _next_available_slot()
         if nxt:
-            message = (
-                f"That day looks full. The next available is {nxt['date']} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?"
+            message = _with_ack(
+                f"That day looks full. The next available is {nxt['date']} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?",
+                0.75,
             )
         else:
-            message = "Sorry, I can’t see any free times right now."
+            message = _with_ack("Sorry, I can’t see any free times right now.", 0.7)
         state["booking_date"] = date
         state["booking_available_times"] = []
         state["stage"] = "booking_date"
         state["silence_count"] = 0
         state["retries"] = 0
-        return _respond_with_gather(state, message, action="/gather-booking")
+        return _respond_with_gather(
+            state,
+            nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.6),
+            action="/gather-booking",
+        )
 
     state.setdefault("intent", "booking")
     state["booking_date"] = date
@@ -548,7 +620,7 @@ def _safe_int(value: Any) -> int:
 def _handle_silence(
     state: Dict[str, Any],
     *,
-    reprompt: str,
+    reprompt: PromptPayload,
     action: str = "/gather-intent",
 ) -> Response:
     state["silence_count"] = state.get("silence_count", 0) + 1
@@ -558,7 +630,17 @@ def _handle_silence(
         extra={"call_sid": state.get("call_sid"), "count": state["silence_count"], "stage": state.get("stage")},
     )
     if state["silence_count"] == 1:
-        return _respond_with_gather(state, reprompt, action=action)
+        prompt = reprompt
+        if isinstance(prompt, str):
+            if prompt == CLARIFY_PROMPT:
+                clarifier = pick_clarifier()
+                if clarifier:
+                    prompt = _with_ack(clarifier, 0.7)
+                else:
+                    prompt = _with_ack(prompt, 0.6)
+            else:
+                prompt = _with_ack(prompt, 0.65)
+        return _respond_with_gather(state, prompt, action=action)
     return _respond_with_goodbye(state)
 
 
@@ -587,12 +669,13 @@ def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_in
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
     if intent in INFO_LINES:
-        message = f"{INFO_LINES[intent]} {ANYTHING_ELSE_PROMPT}"
+        message = _with_ack(f"{INFO_LINES[intent]} {ANYTHING_ELSE_PROMPT}", 0.85)
+        payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
         state["intent"] = intent
         state["stage"] = "follow_up"
         state["retries"] = 0
         logger.info("Providing information", extra={"call_sid": state.get("call_sid"), "intent": intent})
-        return _respond_with_gather(state, message)
+        return _respond_with_gather(state, payload)
     if intent == "availability":
         if state.get("intent") != "booking":
             _reset_booking_context(state)
@@ -601,9 +684,14 @@ def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_in
         return _start_booking(state, user_input)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
         state["stage"] = "intent"
-        return _respond_with_gather(state, CLARIFY_PROMPT)
+        return _respond_with_gather(state, _with_ack(CLARIFY_PROMPT, 0.65))
     state["intent"] = state.get("intent") or "other"
-    return _respond_with_gather(state, CLARIFY_PROMPT)
+    clarifier = pick_clarifier()
+    if clarifier:
+        prompt = _with_ack(clarifier, 0.7)
+    else:
+        prompt = _with_ack(CLARIFY_PROMPT, 0.65)
+    return _respond_with_gather(state, prompt)
 
 
 def _handle_follow_up(state: Dict[str, Any], intent: Optional[str], user_input: str) -> Response:
@@ -619,9 +707,14 @@ def _handle_follow_up(state: Dict[str, Any], intent: Optional[str], user_input: 
         return _handle_primary_intent(state, intent, user_input)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
         state["stage"] = "intent"
-        return _respond_with_gather(state, CLARIFY_PROMPT)
+        return _respond_with_gather(state, _with_ack(CLARIFY_PROMPT, 0.65))
     state["stage"] = "intent"
-    return _respond_with_gather(state, CLARIFY_PROMPT)
+    clarifier = pick_clarifier()
+    if clarifier:
+        prompt = _with_ack(clarifier, 0.7)
+    else:
+        prompt = _with_ack(CLARIFY_PROMPT, 0.65)
+    return _respond_with_gather(state, prompt)
 
 
 def _handle_booking_type(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:

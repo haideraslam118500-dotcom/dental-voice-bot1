@@ -29,6 +29,7 @@ SILENCE_REPROMPT = (
 HOLDERS = [
     "Okay, that's fine.",
     "Yeah, sure.",
+    "Hmm, okay.",
     "Right, I understand.",
     "Lovely, thanks.",
     "No worries.",
@@ -40,6 +41,19 @@ HOLDERS = [
     "Great stuff.",
     "Perfect.",
     "Grand.",
+    "Okay, sure.",
+    "Sounds good.",
+    "No problem.",
+    "Alright.",
+    "Got it.",
+    "Makes sense.",
+    "Okay, noted.",
+    "Alright, let me check.",
+    "Okay, one second.",
+    "Right, let’s see here.",
+    "Yep, I can help with that.",
+    "Okay, I hear you.",
+    "Great, thanks.",
 ]
 
 CLARIFIERS = [
@@ -53,6 +67,21 @@ CLARIFIERS = [
     "I want to be sure I heard you right, was it about hours, address, prices, or booking?",
     "Apologies, the line dipped for a second. What do you need today?",
     "Do you need help with hours, address, prices, or a booking?",
+    "Sorry, could you say that again in a few words?",
+    "I didn’t quite catch that — did you mean a booking, our hours, or prices?",
+    "One more time please — which day would you like?",
+    "Could you repeat that slowly for me?",
+]
+
+THINKING_FILLERS = [
+    "Okay, one moment.",
+    "Alright, let me just check.",
+    "No worries, give me a second.",
+    "Okay, let’s see what we’ve got.",
+    "Sure, let me pull that up.",
+    "Right, I’m checking that now.",
+    "Okay, just a sec.",
+    "Alright, I’ll take a quick look.",
 ]
 
 NAME_CLARIFIERS = [
@@ -90,6 +119,7 @@ CLOSINGS = [
     "Okay, thanks for calling — have a lovely day. Goodbye.",
     "Alright, I appreciate the call. Take care, goodbye.",
     "Thanks for calling. Have a great day. Goodbye.",
+    "Cheers for calling. Bye for now.",
 ]
 
 CONFIRM_TEMPLATES = [
@@ -99,11 +129,11 @@ CONFIRM_TEMPLATES = [
 ]
 
 HOURS_LINE = (
-    "We're open Monday to Friday, nine till five; Saturdays ten till two; Sundays closed."
+    "We’re open Monday to Friday nine to five, Saturday nine to one. Closed Sundays and bank holidays."
 )
-ADDRESS_LINE = "We're at 12 Market Street, Central Milton Keynes, MK9 3QA."
+ADDRESS_LINE = "We’re at 12 High Street, Oakford, OX1 2AB. Entrance next to the pharmacy."
 PRICES_LINE = (
-    "A checkup starts from sixty pounds, hygiene from seventy-five, and white fillings from one hundred and twenty."
+    "A routine check-up is forty five pounds. Hygiene is sixty five. Whitening starts from two hundred and fifty."
 )
 
 ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
@@ -139,6 +169,10 @@ def pick_holder() -> str:
 
 def pick_clarifier() -> str:
     return random.choice(CLARIFIERS)
+
+
+def pick_thinking_filler() -> str:
+    return random.choice(THINKING_FILLERS)
 
 
 def pick_name_clarifier() -> str:

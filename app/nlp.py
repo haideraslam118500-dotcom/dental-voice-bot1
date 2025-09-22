@@ -4,6 +4,7 @@ import calendar
 import re
 from datetime import datetime, timedelta
 from datetime import date as _date
+from typing import Sequence
 
 
 def today_date() -> _date:
@@ -125,6 +126,23 @@ def hhmm_to_12h(hhmm: str) -> str:
     if minute == 0:
         return f"{display_hour}{suffix}"
     return f"{display_hour}:{minute:02d}{suffix}"
+
+
+def maybe_prefix_with_filler(
+    text: str,
+    fillers: Sequence[str],
+    chance: float = 0.5,
+) -> list[tuple[str, str]]:
+    """Optionally prepend a short filler + pause to avoid silence."""
+
+    import random
+
+    parts: list[tuple[str, str]] = []
+    if fillers and chance > 0 and random.random() < chance:
+        parts.append(("say", random.choice(list(fillers))))
+        parts.append(("pause", "0.2"))
+    parts.append(("say", text))
+    return parts
 
 
 def fuzzy_pick_time(user_text: str, available_hhmm: list[str]) -> str | None:
