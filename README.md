@@ -1,37 +1,21 @@
-# AI Receptionist for Dental Practices
+# Dental Voice Receptionist
 
-A production-ready FastAPI application that answers inbound Twilio Voice calls for dental practices. The assistant greets callers, captures their name, identifies intent (hours, address, prices, or booking) and, when booking, gathers a preferred appointment time before handing off to staff.
+A FastAPI application that turns a Twilio voice number into a warm, UK-style dental receptionist. The assistant greets callers with varied openings, handles hours/address/prices/booking questions, captures booking details, keeps a running transcript, and learns from each day of calls.
 
-## Features
+## Key features
 
-- FastAPI webhooks with short, UK-friendly prompts rendered with Amazon Polly Amy (fallback to Alice).
-- Intent flow with retry logic for first name, intent selection, and booking time capture.
-- In-memory call state tracking keyed by `CallSid`, persisted to SQLite once the call completes.
-- Optional Twilio signature validation middleware.
-- Structured logging with optional JSON output for log aggregators.
-- Automated unit tests and GitHub Actions workflow running `pytest` on each PR.
+- FastAPI webhooks on port **5173** with `/health`, `/voice`, `/gather-intent`, `/gather-booking`, and `/status` routes.
+- Speech-first Twilio `<Gather>` prompts with barge-in support, keypad shortcuts, and varied conversational fillers.
+- Environment-driven Polly voice selection (default `Polly.Amy` with `alice` fallback) and short, natural UK prompts.
+- Per-call memory keyed by `CallSid`, including transcripts, caller name, intent, requested time, and retry counters.
+- Automatic persistence:
+  - Plain-text transcripts saved in `transcripts/` (Windows-safe filenames).
+  - Booking attempts appended to `data/bookings.csv`.
+  - Completed call summaries appended to `data/calls.jsonl`.
+- Optional Twilio signature validation and structured JSON logging.
+- Daily self-learning loop that inspects transcripts, writes suggestions, and opens/updates a GitHub issue for human review.
 
-## Project structure
-
-```
-app/
-  config.py          # Environment driven settings (logging, signatures, DB path)
-  intent.py          # Basic speech/digit intent parsing
-  logging_config.py  # Text vs JSON logging configuration
-  persistence.py     # SQLite schema + persistence helpers
-  security.py        # Twilio signature validation middleware
-  state.py           # In-memory call state store
-  twiml.py           # Focused TwiML builders used across the flow
-main.py              # FastAPI application wiring the endpoints together
-```
-
-## Prerequisites
-
-- Python 3.11+
-- A Twilio account with a voice-enabled phone number
-- (Optional) [ngrok](https://ngrok.com/) for local tunnelling
-
-## Local setup
+## Setup
 
 ```bash
 python -m venv .venv
@@ -39,96 +23,103 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 ```
 
-### Environment variables
+### Environment variables (.env support)
 
-Create a `.env` file (or export variables in your shell) with the following values:
+The app reads a `.env` file automatically. Create `.env` (or export variables manually) with the settings you need:
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `VERIFY_TWILIO_SIGNATURES` | Enable Twilio webhook signature verification in production. Requires `TWILIO_AUTH_TOKEN`. | `false` |
-| `DEBUG_LOG_JSON` | Emit structured JSON logs instead of plain text. | `false` |
-| `TWILIO_ACCOUNT_SID` | Twilio account SID (used for reference/logging). | _unset_ |
-| `TWILIO_AUTH_TOKEN` | Twilio auth token used for signature validation. | _unset_ |
-| `TWILIO_NUMBER` | Your Twilio phone number in E.164 format. | _unset_ |
-| `CALLS_DB_PATH` | (Optional) Override location of the SQLite database. | `data/calls.sqlite` |
+| `TTS_VOICE` | Preferred Twilio voice name. | `Polly.Amy` |
+| `TTS_LANG` | Voice language/locale. | `en-GB` |
+| `VERIFY_TWILIO_SIGNATURES` | Enable webhook signature validation (requires auth token). | `false` |
+| `DEBUG_LOG_JSON` | Emit JSON logs instead of plain text. | `false` |
+| `TWILIO_AUTH_TOKEN` | Auth token for signature validation. | _unset_ |
+| `TWILIO_ACCOUNT_SID` | Account SID for reference/logging. | _unset_ |
+| `TWILIO_NUMBER` | The Twilio phone number handling calls. | _unset_ |
 
-> **Signature validation:** When `VERIFY_TWILIO_SIGNATURES=true`, the app requires `TWILIO_AUTH_TOKEN` to be set. This should match the token from your Twilio console so the middleware can validate the `X-Twilio-Signature` header on every webhook.
+> When `VERIFY_TWILIO_SIGNATURES=true`, `TWILIO_AUTH_TOKEN` **must** be set or the server will refuse to start.
 
-Load the environment variables before running the app:
-
-```bash
-export $(grep -v '^#' .env | xargs)  # if using a .env file
-```
-
-## Running the application
-
-Start the API on the required port:
+## Running locally
 
 ```bash
 uvicorn main:app --host 0.0.0.0 --port 5173 --reload
 ```
 
-### Exposing locally with ngrok
+Visit `http://localhost:5173/health` for a quick status check.
+
+### Exposing the webhook with ngrok
 
 ```bash
 ngrok http 5173
 ```
 
-Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the Twilio console configuration below. Remember that ngrok URLs change on each restart—update Twilio if you see 502 errors.
+Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the Twilio console configuration below. If ngrok restarts and you see 502 errors from Twilio, update the console with the new URL.
 
 ## Twilio console configuration
 
-1. In the [Twilio Console](https://console.twilio.com/), open **Phone Numbers → Manage → Active numbers**.
-2. Choose your incoming number.
-3. Under **Voice & Fax → A Call Comes In**:
+1. In the [Twilio Console](https://console.twilio.com/), open **Phone Numbers → Manage → Active numbers** and select your number.
+2. Under **Voice & Fax → A Call Comes In**:
    - Set the webhook URL to `https://<your-ngrok-domain>/voice`.
-   - Change the method to **HTTP POST**.
-4. Under **Status Callback URL**:
+   - Choose **HTTP POST**.
+3. Under **Status Callback URL**:
    - Set the URL to `https://<your-ngrok-domain>/status`.
-   - Change the method to **HTTP POST**.
-5. Save changes.
+   - Choose **HTTP POST**.
+4. Save changes and place a test call through the number.
 
-## Call flow overview
+## How the receptionist behaves
 
-1. `/voice` greets the caller and gathers their first name (speech).
-2. `/gather-intent` thanks them by name and gathers intent (speech or DTMF 1–4). Retries twice with crisper prompts if unclear.
-3. `/gather-booking` captures a requested date and time for booking intents, again retrying twice before escalating.
-4. `/status` receives call lifecycle events. When status is `Completed`, the call state is written to `data/calls.sqlite` and in-memory state is cleared.
+- 10–15 varied greetings are chosen at random per call, all in a friendly UK tone.
+- `<Gather>` prompts accept both speech and DTMF (1–4) with barge-in enabled so callers can interrupt.
+- The bot answers questions about opening hours, address, and prices using:
+  - `HOURS_LINE`: “We're open Monday to Friday, nine till five; Saturdays ten till two; Sundays closed.”
+  - `ADDRESS_LINE`: “We're at 12 Market Street, Central Milton Keynes, MK9 3QA.”
+  - `PRICES_LINE`: “A checkup starts from sixty pounds, hygiene from seventy-five, and white fillings from one hundred and twenty.”
+- Booking intent waits to hear a preferred name and time, then confirms and checks if anything else is needed before hanging up.
+- Clarifiers are conversational (“Sorry, could you say that again?”) instead of hard error strings, and two consecutive silences trigger a polite “Is there anything else I can help you with?” check before saying goodbye.
 
-Each TwiML response keeps prompts short (~7 seconds) and speech-first, with optional keypad shortcuts.
+## Persistence outputs
 
-## Logging & persistence
+After each completed call (`/status` with `CallStatus=completed`):
 
-- Logs are INFO level by default. Set `DEBUG_LOG_JSON=true` for JSON output suited to log aggregation.
-- Call summaries persist automatically at the end of each call in SQLite (`data/calls.sqlite`). The schema is:
+- A transcript is written to `transcripts/AI Incoming Call <index> <HH-mm> <dd-MM-yy>.txt`.
+- Booking attempts append to `data/bookings.csv` with columns `timestamp, call_sid, caller_name, requested_time, intent`.
+- A JSON line is added to `data/calls.jsonl` summarising `call_sid, finished_at, direction, from, to, duration_sec, caller_name, intent, requested_time, transcript_file`.
 
-```sql
-CREATE TABLE calls (
-    call_sid TEXT PRIMARY KEY,
-    caller TEXT,
-    intent TEXT,
-    requested_time TEXT,
-    finished_at TEXT
-);
+Folders are created automatically if they do not already exist.
+
+## Daily self-learning loop
+
+- `scripts/learn.py` scans transcripts for gaps (emergency care, bank holidays, SMS confirmations, etc.) and writes `codex_tasks/suggestions-YYYY-MM-DD.md`.
+- `.github/workflows/daily-learn.yml` runs every day at 09:00 Europe/London (or via manual dispatch) to:
+  1. Execute the learning script.
+  2. Commit the new suggestions file if it changed.
+  3. Open or refresh an issue titled **“Daily AI Receptionist improvements YYYY-MM-DD”** with the suggestions plus a ready-to-paste **Codex task** block asking for a follow-up PR.
+- No code changes are made automatically—humans review the suggestions and decide what to implement.
+
+You can also run the script locally:
+
+```bash
+python scripts/learn.py
 ```
 
-## Running tests
+## Testing
 
 ```bash
 pytest
 ```
 
-GitHub Actions (`.github/workflows/tests.yml`) automatically runs the same test suite on pushes to `main` and on every pull request.
+GitHub Actions (`.github/workflows/tests.yml`) runs the same suite on pushes to `main` and every pull request.
 
 ## Troubleshooting
 
-- **405 Method Not Allowed** – Ensure Twilio webhooks are set to use HTTP POST for `/voice` and `/status`.
-- **502 Bad Gateway / stale tunnel** – Restart `ngrok http 5173` and update the Twilio console with the new forwarding URL.
-- **Signature validation failures (403)** – Double-check `VERIFY_TWILIO_SIGNATURES` and that `TWILIO_AUTH_TOKEN` matches the token in the Twilio console. Disable verification locally if you're testing without a stable public URL.
-- **Missing call transcripts** – Confirm the server is running on port 5173 and reachable from the public URL you configured in Twilio.
+- **405 Method Not Allowed** – Ensure Twilio webhooks are configured with HTTP POST for `/voice` and `/status`.
+- **502 / tunnel timeout** – Restart `ngrok http 5173` and update the Twilio console with the new forwarding URL.
+- **403 signature validation failures** – Set `VERIFY_TWILIO_SIGNATURES=false` locally or provide the correct `TWILIO_AUTH_TOKEN` when validating requests.
+- **Polly voice missing** – If Polly voices are not enabled on your Twilio account, set `TTS_VOICE=alice` (or another available voice) in your `.env` file.
+- **No transcripts generated** – Confirm the FastAPI server is running on port 5173 and reachable from the public URL configured in Twilio.
 
 ## Next steps
 
-- Connect the booking intent to a real scheduling system.
-- Push call summaries into your CRM or alerting pipeline.
-- Extend prompts and intents to cover additional FAQs.
+- Expand the intent model for emergencies, payment plans, or treatment-specific FAQs.
+- Hook booking confirmations into your actual practice management system.
+- Review daily suggestion issues and feed accepted improvements into new PRs.
