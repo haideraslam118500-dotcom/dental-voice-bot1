@@ -16,6 +16,7 @@ A FastAPI + Twilio voice assistant that behaves like a natural, speech-first den
   - The assistant reads `data/schedule.csv` for free times.
   - Phrases like “what do you have tomorrow / on Wednesday” will list real times for that day.
   - Booking order: type → day → time → name → confirm. On confirm, the slot is marked **Booked** in `data/schedule.csv` and a line is appended to `data/bookings.csv`.
+  - After booking the bot asks “Is there anything else I can help you with?” and only then ends with a spoken goodbye. If the caller says “no” or is silent twice, it plays a polite closing and hangs up.
   - If a day is full, it suggests the next available slot.
 - Optional webhook signature validation and JSON-formatted logging controlled via environment variables.
 - Daily self-learning workflow that inspects transcripts, writes suggestions, and opens/updates a GitHub issue for review.
@@ -85,10 +86,10 @@ Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the T
 
 - Greeting (played once): “Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general information and booking appointments. Please note, I’m not a medical professional. How can I help you today? You can ask about our opening hours, our address, our prices, or say you’d like to book an appointment.”
 - Intent handling:
-  - “Hours”, “address”, and “prices” replies come directly from `config/practice.yml`, followed by “Is there anything else I can help with?”
+- “Hours”, “address”, and “prices” replies come directly from `config/practice.yml`, followed by “Is there anything else I can help you with?”
   - “Book” triggers a short conversation: first name → preferred day/time → natural confirmation.
   - Unknown speech triggers the clarifier “Do you need our opening hours, address, prices, or would you like to book?”
-- Silences: the first silence repeats the clarifier, the second asks “Is there anything else I can help with?”, and a third silence or “no” ends with a rotating polite goodbye (five variants).
+- Silences: the first silence repeats the clarifier, the second asks “Is there anything else I can help you with?”, and a third silence or “no” ends with a rotating polite goodbye (five variants).
 - Confirmed bookings are logged immediately and acknowledged with “Brilliant… the team will confirm shortly.”
 
 ## Persistence outputs

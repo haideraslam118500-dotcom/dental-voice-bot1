@@ -15,7 +15,7 @@ from twilio.twiml.voice_response import VoiceResponse
 from app.config import get_settings
 from app import nlp, schedule
 from app.dialogue import CONFIRM_TEMPLATES, DISCLAIMER_LINE, GREETINGS
-from app.intent import parse_intent
+from app.intent import extract_appt_type, parse_intent
 from app.logging_config import setup_logging
 from app.persistence import (
     append_booking,
@@ -45,14 +45,16 @@ _voice_fallback_notified = False
 
 MENU_STATEMENT = "I can help with our hours, address, prices, or book you in."
 CLARIFY_PROMPT = "Would you like our hours, address, prices, or to book an appointment?"
-ANYTHING_ELSE_PROMPT = "Is there anything else I can help with?"
+ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
 BOOKING_TIME_PROMPT = "Sure, let's find you a time. What day and time works for you?"
 BOOKING_NAME_PROMPT = "What's the name for the appointment?"
 BOOKING_NAME_REPROMPT = "Could I take the name for the appointment?"
 BOOKING_TIME_PROMPT_TEMPLATE = "Thanks {name}. What day and time works for you?"
 BOOKING_TIME_REPROMPT = "What day and time would you like to come in?"
 BOOKING_CONFIRM_REPROMPT = "Should I pencil that appointment in for you?"
-BOOKING_DECLINED_PROMPT = "No problem, we won't lock anything in just yet. Is there anything else I can help with?"
+BOOKING_DECLINED_PROMPT = (
+    "No problem, we won't lock anything in just yet. Is there anything else I can help you with?"
+)
 
 INFO_LINES = {
     "hours": settings.practice.hours,
@@ -394,7 +396,7 @@ def _booking_confirmed_message(state: Dict[str, Any]) -> str:
         type=state["booking_appt_type"],
         name=state["caller_name"] or "",
     )
-    return f"{msg} Anything else I can help with?"
+    return f"{msg} Is there anything else I can help you with?"
 
 
 def _reset_booking_context(state: Dict[str, Any]) -> None:
@@ -419,6 +421,9 @@ def _next_available_slot() -> Optional[dict]:
 
 
 def _match_appointment_type(text: str) -> Optional[str]:
+    inline = extract_appt_type(text)
+    if inline:
+        return inline
     cleaned = (text or "").strip().lower()
     if not cleaned:
         return None
@@ -510,11 +515,22 @@ def _handle_silence(
     return _respond_with_goodbye(state)
 
 
-def _start_booking(state: Dict[str, Any]) -> Response:
+def _start_booking(state: Dict[str, Any], initial_text: Optional[str] = None) -> Response:
     _reset_booking_context(state)
-    state["stage"] = "booking_type"
     state["silence_count"] = 0
     state["retries"] = 0
+
+    inline_type = extract_appt_type(initial_text or "")
+    if inline_type:
+        state["booking_appt_type"] = inline_type
+        state["stage"] = "booking_date"
+        logger.info(
+            "Booking flow started",
+            extra={"call_sid": state.get("call_sid"), "prefill_type": inline_type},
+        )
+        return _respond_with_gather(state, _booking_date_prompt(inline_type), action="/gather-booking")
+
+    state["stage"] = "booking_type"
     logger.info("Booking flow started", extra={"call_sid": state.get("call_sid")})
     return _respond_with_gather(state, _booking_type_prompt(), action="/gather-booking")
 
@@ -535,7 +551,7 @@ def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_in
             _reset_booking_context(state)
         return _handle_availability_request(state, user_input)
     if intent == "booking":
-        return _start_booking(state)
+        return _start_booking(state, user_input)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
         state["stage"] = "intent"
         return _respond_with_gather(state, CLARIFY_PROMPT)

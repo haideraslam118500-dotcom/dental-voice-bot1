@@ -40,9 +40,14 @@ def list_available(date: str | None = None, limit: int = 6):
     df = load_schedule()
     if df.empty:
         return []
-    avail = df[df["status"] == "Available"]
+    avail = df[df["status"] == "Available"].copy()
     if date:
         avail = avail[avail["date"] == date]
+    try:
+        avail["__t"] = pd.to_datetime(avail["start_time"], format="%H:%M")
+        avail = avail.sort_values("__t").drop(columns=["__t"])
+    except Exception:
+        pass
     return avail.head(limit).to_dict(orient="records")
 
 

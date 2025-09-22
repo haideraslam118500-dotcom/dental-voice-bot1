@@ -114,4 +114,21 @@ def parse_intent(speech: Optional[str]) -> Optional[str]:
     return None
 
 
-__all__ = ["parse_intent"]
+def extract_appt_type(text: str) -> Optional[str]:
+    """Heuristic helper to detect an appointment type mentioned inline."""
+
+    lowered = (text or "").lower()
+    if not lowered:
+        return None
+
+    types = ["check-up", "check up", "hygiene", "whitening", "filling", "emergency"]
+    for raw in types:
+        if raw in lowered:
+            normalized = raw.replace("check up", "check-up").title()
+            if normalized.startswith("Check"):
+                return "Check-up"
+            return normalized
+    return None
+
+
+__all__ = ["parse_intent", "extract_appt_type"]
