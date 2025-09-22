@@ -20,11 +20,19 @@ def _get_gather(xml: str) -> ET.Element:
     return gather
 
 
-def test_gather_intent_allows_dtmf():
+def test_gather_intent_is_speech_only():
     twiml = gather_for_intent("Tell me how to help", VOICE, LANG)
     gather = _get_gather(twiml)
-    assert gather.attrib["input"] == "speech dtmf"
-    assert gather.attrib.get("numDigits") == "1"
+    assert gather.attrib["input"] == "speech"
+    assert "numDigits" not in gather.attrib
+    assert gather.attrib["action"] == "/gather-intent"
+
+
+def test_follow_up_gather_is_speech_only():
+    twiml = gather_for_follow_up("Anything else?", VOICE, LANG)
+    gather = _get_gather(twiml)
+    assert gather.attrib["input"] == "speech"
+    assert "numDigits" not in gather.attrib
     assert gather.attrib["action"] == "/gather-intent"
 
 

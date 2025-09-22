@@ -1,11 +1,12 @@
 # Dental Voice Receptionist
 
-A FastAPI application that turns a Twilio voice number into a warm, UK-style dental receptionist. The assistant greets callers with varied openings, handles hours/address/prices/booking questions, captures booking details, keeps a running transcript, and learns from each day of calls.
+A FastAPI application that turns a Twilio voice number into a warm, UK-style dental receptionist. The assistant opens every call with a consistent, human-like introduction, handles hours/address/prices/booking questions, captures booking details, keeps a running transcript, and learns from each day of calls.
 
 ## Key features
 
 - FastAPI webhooks on port **5173** with `/health`, `/voice`, `/gather-intent`, `/gather-booking`, and `/status` routes.
-- Speech-first Twilio `<Gather>` prompts with barge-in support, keypad shortcuts, and varied conversational fillers.
+- Natural, scripted introduction that sets expectations and explains how the assistant can help.
+- Speech-only Twilio `<Gather>` prompts with barge-in support and varied conversational fillers—no keypad menus to memorise.
 - Environment-driven Polly voice selection (default `Polly.Amy` with `alice` fallback) and short, natural UK prompts.
 - Per-call memory keyed by `CallSid`, including transcripts, caller name, intent, requested time, and retry counters.
 - Automatic persistence:
@@ -68,8 +69,8 @@ Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the T
 
 ## How the receptionist behaves
 
-- 10–15 varied greetings are chosen at random per call, all in a friendly UK tone.
-- `<Gather>` prompts accept both speech and DTMF (1–4) with barge-in enabled so callers can interrupt.
+- Every call starts with: “Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general information and booking appointments. Please note, I’m not a medical professional. You can ask about our opening hours, our address, our prices, or say you’d like to book an appointment.”
+- `<Gather>` prompts listen for natural speech with barge-in enabled so callers can interrupt—no keypad presses required.
 - The bot answers questions about opening hours, address, and prices using:
   - `HOURS_LINE`: “We're open Monday to Friday, nine till five; Saturdays ten till two; Sundays closed.”
   - `ADDRESS_LINE`: “We're at 12 Market Street, Central Milton Keynes, MK9 3QA.”

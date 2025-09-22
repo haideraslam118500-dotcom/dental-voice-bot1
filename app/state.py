@@ -21,6 +21,7 @@ class CallState:
     transcript_file: Optional[str] = None
     final_goodbye: Optional[str] = None
     metadata: Dict[str, Optional[str]] = field(default_factory=dict)
+    has_greeted: bool = False
 
     def add_system_line(self, text: str) -> None:
         text = text.strip()

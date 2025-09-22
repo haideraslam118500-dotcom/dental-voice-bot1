@@ -40,8 +40,7 @@ def gather_for_intent(prompt: str, voice: str, language: str) -> str:
         voice,
         language,
         action="/gather-intent",
-        allow_digits=True,
-        num_digits=1,
+        allow_digits=False,
         hints="hours,address,prices,book",
     )
 
@@ -52,8 +51,7 @@ def gather_for_follow_up(prompt: str, voice: str, language: str) -> str:
         voice,
         language,
         action="/gather-intent",
-        allow_digits=True,
-        num_digits=1,
+        allow_digits=False,
         hints="yes,no,bye",
     )
 
