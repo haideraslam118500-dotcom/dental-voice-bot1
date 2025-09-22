@@ -36,6 +36,29 @@ def normalize_time(text: str) -> str | None:
     if not text:
         return None
     lowered = text.lower().strip()
+
+    if "half past" in lowered:
+        m2 = re.search(r"half past (\d{1,2})", lowered)
+        if m2:
+            hour = int(m2.group(1))
+            if 0 <= hour < 24:
+                return f"{hour:02d}:30"
+
+    if "quarter past" in lowered:
+        m2 = re.search(r"quarter past (\d{1,2})", lowered)
+        if m2:
+            hour = int(m2.group(1))
+            if 0 <= hour < 24:
+                return f"{hour:02d}:15"
+
+    if "quarter to" in lowered:
+        m2 = re.search(r"quarter to (\d{1,2})", lowered)
+        if m2:
+            hour = int(m2.group(1)) - 1
+            if hour < 0:
+                hour = 23
+            return f"{hour:02d}:45"
+
     match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", lowered)
     if not match:
         return None

@@ -84,9 +84,9 @@ GOODBYES = [
 ]
 
 CLOSINGS = [
-    "Okay, thanks for calling Oak Dental. Goodbye.",
-    "Alright, appreciate the call. Goodbye.",
-    "Thanks for calling. Take care, goodbye.",
+    "Okay, thanks for calling — have a lovely day. Goodbye.",
+    "Alright, I appreciate the call. Take care, goodbye.",
+    "Thanks for calling. Have a great day. Goodbye.",
 ]
 
 CONFIRM_TEMPLATES = [
@@ -218,7 +218,7 @@ def booking_flow(state, transcript: str):
             if not next_avail:
                 return "Sorry, I can’t see any available times in the schedule right now."
             return (
-                "Sorry, no free times on that day. "
+                "Sorry, no free times that day. "
                 f"The next available is {next_avail['date']} at {next_avail['start_time']}. Would you like that?"
             )
         options = ", ".join(slot["start_time"] for slot in avail)
@@ -236,15 +236,12 @@ def booking_flow(state, transcript: str):
             return f"Sorry, {hhmm} isn’t free. Times available are {hint}. Which would you like?"
         state["time"] = hhmm
         state["stage"] = "ask_name"
-        return "Okay, {time} noted. And your name please?".format(time=hhmm)
+        return f"Okay, {state['time']} noted. And your name please?"
 
     if state["stage"] == "ask_name":
         state["name"] = (transcript or "").strip()
         state["stage"] = "confirm"
-        return (
-            f"Great, {state['name']}. Shall I book you in for {state['appt_type']} "
-            f"on {state['date']} at {state['time']}?"
-        )
+        return f"Great, {state['name']}. Shall I book you for {state['appt_type']} on {state['date']} at {state['time']}?"
 
     if state["stage"] == "confirm":
         if (transcript or "").lower().strip() in {"yes", "yeah", "yep", "ok", "okay", "please", "sure"}:
@@ -254,11 +251,11 @@ def booking_flow(state, transcript: str):
                     date=state["date"], time=state["time"], type=state["appt_type"], name=state["name"]
                 )
                 state.clear()
-                return msg + " Anything else I can help with?"
+                return msg + " Is there anything else I can help you with?"
             state.clear()
             return "Sorry, that slot was just taken. Would you like to pick another?"
         state.clear()
-        return "No problem, I won’t reserve it. Anything else I can help with?"
+        return "No problem, I won’t reserve it. Is there anything else I can help you with?"
 
     return "I didn’t quite catch that."
 
@@ -273,8 +270,9 @@ def handle_availability(transcript: str, state) -> str:
         if nxt:
             return f"That day looks full. The next available is {nxt['date']} at {nxt['start_time']}. Would you like that?"
         return "Sorry, I can’t see any free times right now."
-    first = ", ".join(slot["start_time"] for slot in avail[:5])
+    options = ", ".join(slot["start_time"] for slot in avail[:6])
+    state.clear()
     state["stage"] = "ask_time"
     state["date"] = date
-    return f"On {date}, we’ve got {first}. Which time works for you?"
+    return f"On {date}, we have {options}. Which time works for you?"
 

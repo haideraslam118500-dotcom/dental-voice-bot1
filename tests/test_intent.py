@@ -23,3 +23,5 @@ def test_unknown_returns_none():
 def test_availability_detection():
     assert parse_intent("What do you have?") == "availability"
     assert parse_intent("Any slots available tomorrow?") == "availability"
+    assert parse_intent("What times are available tomorrow?") == "availability"
+    assert parse_intent("Have you got anything on Wednesday?") == "availability"
