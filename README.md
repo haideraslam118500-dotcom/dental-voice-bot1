@@ -18,6 +18,7 @@ A FastAPI + Twilio voice assistant that behaves like a natural, speech-first den
   - Booking order: type → day → time → name → confirm. On confirm, the slot is marked **Booked** in `data/schedule.csv` and a line is appended to `data/bookings.csv`.
   - After booking the bot asks “Is there anything else I can help you with?” and only then ends with a spoken goodbye. If the caller says “no” or is silent twice, it plays a polite closing and hangs up.
   - If a day is full, it suggests the next available slot.
+  - Availability dates are spoken naturally: “today”, “tomorrow”, “this Thursday”, or “Thursday the 25th”.
   - Times in prompts are spoken in 12-hour format (e.g., 9am, 1pm, 1:30pm).
   - The bot understands choices like “4:30” or “4 pm” and matches them to real available slots.
   - Saying “any time / anytime / whenever” picks the first available slot for that day.
