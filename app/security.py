@@ -8,7 +8,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import PlainTextResponse, Response
 from starlette.status import HTTP_403_FORBIDDEN
-from twilio.request_validator import RequestValidator
+from app.twilio_compat import RequestValidator
 
 logger = logging.getLogger(__name__)
 

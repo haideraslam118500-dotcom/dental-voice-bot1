@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -11,9 +11,39 @@ class CallState:
     caller_name: Optional[str] = None
     intent: Optional[str] = None
     requested_time: Optional[str] = None
-    name_attempts: int = 0
-    intent_attempts: int = 0
-    booking_attempts: int = 0
+    transcript: List[str] = field(default_factory=list)
+    awaiting: str = "intent"
+    retries: Dict[str, int] = field(
+        default_factory=lambda: {"intent": 0, "name": 0, "time": 0}
+    )
+    silence_count: int = 0
+    completed: bool = False
+    transcript_file: Optional[str] = None
+    final_goodbye: Optional[str] = None
+    metadata: Dict[str, Optional[str]] = field(default_factory=dict)
+
+    def add_system_line(self, text: str) -> None:
+        text = text.strip()
+        if text:
+            self.transcript.append(f"AI: {text}")
+
+    def add_caller_line(self, text: str) -> None:
+        text = text.strip()
+        if text:
+            self.transcript.append(f"Caller: {text}")
+
+    def reset_retries(self, key: str) -> None:
+        if key in self.retries:
+            self.retries[key] = 0
+
+    def bump_retry(self, key: str) -> int:
+        if key not in self.retries:
+            self.retries[key] = 0
+        self.retries[key] += 1
+        return self.retries[key]
+
+    def reset_silence(self) -> None:
+        self.silence_count = 0
 
 
 class CallStateStore:

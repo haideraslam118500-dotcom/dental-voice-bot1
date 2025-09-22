@@ -4,10 +4,49 @@ import re
 from typing import Optional
 
 _INTENT_KEYWORDS = {
-    "hours": {"hours", "open", "opening", "times"},
-    "address": {"address", "where", "located", "location", "find"},
-    "prices": {"price", "prices", "cost", "fee", "fees"},
-    "booking": {"book", "booking", "appointment", "schedule", "reserve"},
+    "hours": {"hours", "open", "opening", "times", "time"},
+    "address": {"address", "where", "located", "location", "find", "directions"},
+    "prices": {"price", "prices", "cost", "fee", "fees", "charges", "how much"},
+    "booking": {
+        "book",
+        "booking",
+        "appointment",
+        "schedule",
+        "reserve",
+        "checkup",
+        "see the dentist",
+        "visit",
+    },
+}
+
+_GOODBYE_KEYWORDS = {
+    "bye",
+    "goodbye",
+    "bye bye",
+    "bye-bye",
+    "no thanks",
+    "no thank you",
+    "that's all",
+    "thats all",
+    "nothing else",
+    "all good",
+    "we're good",
+    "were good",
+    "that is all",
+    "cheers that's all",
+    "cheers, that's all",
+}
+
+_AFFIRM_KEYWORDS = {
+    "yes",
+    "yeah",
+    "yep",
+    "sure",
+    "please",
+    "ok",
+    "okay",
+    "alright",
+    "sounds good",
 }
 
 _DIGIT_INTENT = {
@@ -29,9 +68,24 @@ def parse_intent(speech: Optional[str], digits: Optional[str]) -> Optional[str]:
         return None
 
     text = speech.lower()
-    text = re.sub(r"[^a-z\s]", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    words = set(text.split())
+
+    def _contains(keyword: str) -> bool:
+        return keyword in text if " " in keyword else keyword in words
+
+    for keyword in _GOODBYE_KEYWORDS:
+        if _contains(keyword):
+            return "goodbye"
+
+    for keyword in _AFFIRM_KEYWORDS:
+        if _contains(keyword):
+            return "affirm"
+
     for intent, keywords in _INTENT_KEYWORDS.items():
-        if any(keyword in text for keyword in keywords):
+        if any(_contains(keyword) for keyword in keywords):
             return intent
     return None
 

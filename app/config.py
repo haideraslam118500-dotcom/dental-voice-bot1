@@ -3,13 +3,16 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from typing import Optional
+
+from dotenv import load_dotenv
 
 
 _DEF_VOICE = "Polly.Amy"
 _FALLBACK_VOICE = "alice"
 _LANGUAGE = "en-GB"
+
+load_dotenv()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -26,10 +29,9 @@ class Settings:
     twilio_auth_token: Optional[str]
     twilio_account_sid: Optional[str]
     twilio_number: Optional[str]
-    calls_db_path: Path
-    language: str = _LANGUAGE
-    preferred_voice: str = _DEF_VOICE
-    fallback_voice: str = _FALLBACK_VOICE
+    language: str
+    tts_voice: str
+    fallback_voice: str
 
     def __post_init__(self) -> None:
         if self.verify_twilio_signatures and not self.twilio_auth_token:
@@ -40,15 +42,15 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    calls_db = Path(os.getenv("CALLS_DB_PATH", "data/calls.sqlite"))
-    calls_db.parent.mkdir(parents=True, exist_ok=True)
     return Settings(
         verify_twilio_signatures=_env_bool("VERIFY_TWILIO_SIGNATURES", False),
         debug_log_json=_env_bool("DEBUG_LOG_JSON", False),
         twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN"),
         twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID"),
         twilio_number=os.getenv("TWILIO_NUMBER"),
-        calls_db_path=calls_db,
+        language=os.getenv("TTS_LANG", _LANGUAGE),
+        tts_voice=os.getenv("TTS_VOICE", _DEF_VOICE),
+        fallback_voice=_FALLBACK_VOICE,
     )
 
 
