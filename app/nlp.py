@@ -36,6 +36,7 @@ def normalize_time(text: str) -> str | None:
     if not text:
         return None
     lowered = text.lower().strip()
+    lowered = lowered.replace(".", "")
 
     if "half past" in lowered:
         m2 = re.search(r"half past (\d{1,2})", lowered)

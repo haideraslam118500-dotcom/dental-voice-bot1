@@ -5,6 +5,7 @@ import random
 from typing import Optional
 
 from app import nlp, schedule
+from app.intent import extract_appt_type
 
 
 log = logging.getLogger("app.dialogue")
@@ -193,6 +194,11 @@ def booking_flow(state, transcript: str):
 
     if state.get("stage") is None:
         state.clear()
+        inline_type = extract_appt_type(transcript)
+        if inline_type:
+            state["appt_type"] = inline_type
+            state["stage"] = "ask_date"
+            return f"Great, a {inline_type} — what day works best for you?"
         state["stage"] = "ask_type"
         return "Sure, what type of appointment would you like? For example check-up, hygiene, or whitening?"
 
