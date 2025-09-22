@@ -70,7 +70,9 @@ Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the T
 ## How the receptionist behaves
 
 - Every call starts with: “Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general information and booking appointments. Please note, I’m not a medical professional. You can ask about our opening hours, our address, our prices, or say you’d like to book an appointment.”
+- If the caller pauses after that greeting, the assistant gently adds once: “Hello, I’m still on the line. Let me know if you’d like our opening hours, our address, our prices, or to book an appointment.”
 - `<Gather>` prompts listen for natural speech with barge-in enabled so callers can interrupt—no keypad presses required.
+- Callers interact purely through speech; number presses are ignored.
 - The bot answers questions about opening hours, address, and prices using:
   - `HOURS_LINE`: “We're open Monday to Friday, nine till five; Saturdays ten till two; Sundays closed.”
   - `ADDRESS_LINE`: “We're at 12 Market Street, Central Milton Keynes, MK9 3QA.”

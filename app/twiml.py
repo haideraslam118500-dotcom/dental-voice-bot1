@@ -11,13 +11,11 @@ def _gather(
     language: str,
     *,
     action: str,
-    allow_digits: bool,
-    num_digits: Optional[int] = None,
     hints: Optional[str] = None,
 ) -> str:
     response = VoiceResponse()
     gather_kwargs = {
-        "input": "speech dtmf" if allow_digits else "speech",
+        "input": "speech",
         "action": action,
         "method": "POST",
         "speech_timeout": "auto",
@@ -25,8 +23,6 @@ def _gather(
         "barge_in": True,
         "language": language,
     }
-    if allow_digits and num_digits:
-        gather_kwargs["num_digits"] = num_digits
     if hints:
         gather_kwargs["hints"] = hints
     gather = response.gather(**gather_kwargs)
@@ -40,7 +36,6 @@ def gather_for_intent(prompt: str, voice: str, language: str) -> str:
         voice,
         language,
         action="/gather-intent",
-        allow_digits=False,
         hints="hours,address,prices,book",
     )
 
@@ -51,7 +46,6 @@ def gather_for_follow_up(prompt: str, voice: str, language: str) -> str:
         voice,
         language,
         action="/gather-intent",
-        allow_digits=False,
         hints="yes,no,bye",
     )
 
@@ -62,7 +56,6 @@ def gather_for_name(prompt: str, voice: str, language: str) -> str:
         voice,
         language,
         action="/gather-booking",
-        allow_digits=False,
     )
 
 
@@ -72,7 +65,6 @@ def gather_for_time(prompt: str, voice: str, language: str) -> str:
         voice,
         language,
         action="/gather-booking",
-        allow_digits=True,
     )
 
 
