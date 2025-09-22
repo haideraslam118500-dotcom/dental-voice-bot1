@@ -9,9 +9,14 @@ TRANSCRIPTS_DIR = Path("transcripts")
 OUTPUT_DIR = Path("codex_tasks")
 TIMEZONE = ZoneInfo("Europe/London")
 
+EMERGENCY_SUGGESTION = (
+    "Multiple callers referenced urgent needs. Add an emergency-handling intent with clear next steps."
+)
+
 KEYWORD_SUGGESTIONS = {
-    "emergency": "Callers mentioned emergency care. Add clear guidance on urgent appointments and escalation steps.",
-    "urgent": "Clarify how urgent or same-day appointments are handled.",
+    "emergency": EMERGENCY_SUGGESTION,
+    "urgent": EMERGENCY_SUGGESTION,
+    "pain": EMERGENCY_SUGGESTION,
     "bank holiday": "Explain bank holiday opening hours or voicemail options.",
     "holiday": "Document bank holiday hours to avoid confusion.",
     "sunday": "Confirm whether Sunday cover is available or how to reach the team.",

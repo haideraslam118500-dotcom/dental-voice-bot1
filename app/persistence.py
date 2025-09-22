@@ -47,13 +47,10 @@ def save_transcript(call_sid: str, transcript: Iterable[str]) -> Path:
     index = _next_transcript_index()
     filename = f"AI Incoming Call {index:04d} {now:%H-%M} {now:%d-%m-%y}.txt"
     path = TRANSCRIPTS_DIR / filename
-    lines: List[str] = list(transcript)
-    if lines and not lines[0].startswith("Call SID:"):
-        header = f"Call SID: {call_sid}"
-        lines.insert(0, header)
+    lines: List[str] = [entry.rstrip() for entry in transcript]
     with path.open("w", encoding="utf-8") as handle:
         for entry in lines:
-            handle.write(entry.rstrip() + "\n")
+            handle.write(entry + "\n")
     logger.info("Saved transcript", extra={"call_sid": call_sid, "path": str(path)})
     return path
 
@@ -68,7 +65,7 @@ def append_booking(call_sid: str, caller_name: Optional[str], requested_time: Op
         writer = csv.writer(handle)
         if is_new:
             writer.writerow(["timestamp", "call_sid", "caller_name", "requested_time", "intent"])
-        writer.writerow([timestamp, call_sid, caller_name or "", requested_time, "book"])
+        writer.writerow([timestamp, call_sid, caller_name or "", requested_time.strip(), "book"])
     logger.info(
         "Logged booking request",
         extra={"call_sid": call_sid, "requested_time": requested_time, "caller_name": caller_name},

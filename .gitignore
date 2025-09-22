@@ -1,3 +1,12 @@
+# Local runtime artefacts
+.venv/
+__pycache__/
+*.pyc
+.env
+transcripts/
+data/
+.codex_tasks/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
