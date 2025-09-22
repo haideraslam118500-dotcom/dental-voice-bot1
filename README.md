@@ -12,6 +12,11 @@ A FastAPI + Twilio voice assistant that behaves like a natural, speech-first den
   - Plain-text transcripts stored in `transcripts/AI Incoming Call <index> <HH-mm> <dd-MM-yy>.txt` with `[Agent]` / `[Caller]` lines.
   - Bookings appended to `data/bookings.csv` (`timestamp, call_sid, caller_name, requested_time, intent`).
   - Call summaries appended to `data/calls.jsonl` (`call_sid, finished_at, direction, from, to, duration_sec, caller_name, intent, requested_time, transcript_file`).
+- Availability & bookings
+  - The assistant reads `data/schedule.csv` for free times.
+  - Phrases like “what do you have tomorrow / on Wednesday” will list real times for that day.
+  - Booking order: type → day → time → name → confirm. On confirm, the slot is marked **Booked** in `data/schedule.csv` and a line is appended to `data/bookings.csv`.
+  - If a day is full, it suggests the next available slot.
 - Optional webhook signature validation and JSON-formatted logging controlled via environment variables.
 - Daily self-learning workflow that inspects transcripts, writes suggestions, and opens/updates a GitHub issue for review.
 
