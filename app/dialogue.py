@@ -4,7 +4,7 @@ import logging
 import random
 from typing import Optional
 
-from app import schedule
+from app import nlp, schedule
 
 
 log = logging.getLogger("app.dialogue")
@@ -192,41 +192,62 @@ def booking_flow(state, transcript: str):
     log.info(f"Booking flow stage={state.get('stage')} input={transcript}")
 
     if state.get("stage") is None:
+        state.clear()
         state["stage"] = "ask_type"
         return "Sure, what type of appointment would you like? For example check-up, hygiene, or whitening?"
 
-    elif state["stage"] == "ask_type":
-        chosen = transcript.strip().capitalize()
-        if not any(chosen.lower() == t.lower() for t in schedule.APPT_TYPES):
+    if state["stage"] == "ask_type":
+        chosen = (transcript or "").strip().lower()
+        match = next((t for t in schedule.APPT_TYPES if t.lower() == chosen), None)
+        if match is None:
+            match = next((t for t in schedule.APPT_TYPES if chosen and chosen in t.lower()), None)
+        if not match:
             return f"Sorry, I didn’t catch that type. We do {', '.join(schedule.APPT_TYPES)}. Which would you like?"
-        state["appt_type"] = chosen
+        state["appt_type"] = match
         state["stage"] = "ask_date"
-        return f"Great, a {state['appt_type']} — what day works best for you?"
+        return f"Great, a {match} — what day works best for you?"
 
-    elif state["stage"] == "ask_date":
-        state["date"] = transcript.strip()
-        avail = schedule.list_available(date=state["date"])
+    if state["stage"] == "ask_date":
+        parsed = nlp.parse_date_phrase(transcript)
+        if not parsed:
+            return "Which day works best for you? You can say tomorrow or a weekday like Wednesday."
+        state["date"] = parsed
+        avail = schedule.list_available(date=parsed)
         if not avail:
-            next_avail = schedule.find_next_available(state["date"])
+            next_avail = schedule.find_next_available()
             if not next_avail:
                 return "Sorry, I can’t see any available times in the schedule right now."
-            return f"Sorry, no free times on {state['date']}. The next available is {next_avail['date']} at {next_avail['start_time']}. Would you like that?"
-        options = ", ".join(f"{s['start_time']}" for s in avail)
+            return (
+                "Sorry, no free times on that day. "
+                f"The next available is {next_avail['date']} at {next_avail['start_time']}. Would you like that?"
+            )
+        options = ", ".join(slot["start_time"] for slot in avail)
         state["stage"] = "ask_time"
-        return f"On {state['date']}, we have {options}. Which time works for you?"
+        return f"On {parsed}, we have {options}. Which time works for you?"
 
-    elif state["stage"] == "ask_time":
-        state["time"] = transcript.strip()
+    if state["stage"] == "ask_time":
+        hhmm = nlp.normalize_time(transcript)
+        if not hhmm:
+            return "What time suits you? You can say ten a m, ten thirty, or three p m."
+        avail = {slot["start_time"] for slot in schedule.list_available(date=state.get("date"))}
+        if hhmm not in avail:
+            sample = sorted(avail)[:3]
+            hint = ", ".join(sample) if sample else "no free times"
+            return f"Sorry, {hhmm} isn’t free. Times available are {hint}. Which would you like?"
+        state["time"] = hhmm
         state["stage"] = "ask_name"
-        return f"Okay, {state['time']} noted. And your name please?"
+        return "Okay, {time} noted. And your name please?".format(time=hhmm)
 
-    elif state["stage"] == "ask_name":
-        state["name"] = transcript.strip()
+    if state["stage"] == "ask_name":
+        state["name"] = (transcript or "").strip()
         state["stage"] = "confirm"
-        return f"Great, {state['name']}. Shall I book you in for {state['appt_type']} on {state['date']} at {state['time']}?"
+        return (
+            f"Great, {state['name']}. Shall I book you in for {state['appt_type']} "
+            f"on {state['date']} at {state['time']}?"
+        )
 
-    elif state["stage"] == "confirm":
-        if transcript.lower() in ("yes","yeah","yep","ok","okay","please","sure"):
+    if state["stage"] == "confirm":
+        if (transcript or "").lower().strip() in {"yes", "yeah", "yep", "ok", "okay", "please", "sure"}:
             ok = schedule.reserve_slot(state["date"], state["time"], state["name"], state["appt_type"])
             if ok:
                 msg = random.choice(CONFIRM_TEMPLATES).format(
@@ -234,12 +255,26 @@ def booking_flow(state, transcript: str):
                 )
                 state.clear()
                 return msg + " Anything else I can help with?"
-            else:
-                state.clear()
-                return "Sorry, that slot was just taken. Would you like to pick another?"
-        else:
             state.clear()
-            return "No problem, I won’t reserve it. Anything else I can help with?"
+            return "Sorry, that slot was just taken. Would you like to pick another?"
+        state.clear()
+        return "No problem, I won’t reserve it. Anything else I can help with?"
 
     return "I didn’t quite catch that."
+
+
+def handle_availability(transcript: str, state) -> str:
+    date = nlp.parse_date_phrase(transcript)
+    if not date:
+        return "Sure — which day are you thinking of? You can say tomorrow or a weekday like Wednesday."
+    avail = schedule.list_available(date=date)
+    if not avail:
+        nxt = schedule.find_next_available()
+        if nxt:
+            return f"That day looks full. The next available is {nxt['date']} at {nxt['start_time']}. Would you like that?"
+        return "Sorry, I can’t see any free times right now."
+    first = ", ".join(slot["start_time"] for slot in avail[:5])
+    state["stage"] = "ask_time"
+    state["date"] = date
+    return f"On {date}, we’ve got {first}. Which time works for you?"
 
