@@ -4,7 +4,7 @@ import re
 from typing import Optional
 
 _INTENT_KEYWORDS = {
-    "hours": {"hours", "open", "opening", "times", "time"},
+    "hours": {"hours", "open", "opening", "closing"},
     "address": {"address", "where", "located", "location", "find", "directions"},
     "prices": {"price", "prices", "cost", "fee", "fees", "charges", "how much"},
     "booking": {
@@ -23,15 +23,25 @@ _AVAILABILITY_PATTERNS = {
     "availability",
     "available",
     "what do you have",
+    "what have you got",
     "what times",
-    "what time slots",
+    "times are available",
     "free slots",
     "free time",
     "free appointment",
+    "open slots",
     "what can you do tomorrow",
     "what can you do on",
     "any slots",
     "any availability",
+    "today",
+    "tomorrow",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
 }
 
 _GOODBYE_KEYWORDS = {
@@ -81,6 +91,10 @@ def parse_intent(speech: Optional[str]) -> Optional[str]:
     if any(_contains(keyword) for keyword in booking_keywords):
         return "booking"
 
+    hours_keywords = _INTENT_KEYWORDS.get("hours", set())
+    if any(_contains(keyword) for keyword in hours_keywords):
+        return "hours"
+
     for keyword in _GOODBYE_KEYWORDS:
         if _contains(keyword):
             return "goodbye"
@@ -93,7 +107,7 @@ def parse_intent(speech: Optional[str]) -> Optional[str]:
         return "availability"
 
     for intent, keywords in _INTENT_KEYWORDS.items():
-        if intent == "booking":
+        if intent in {"booking", "hours"}:
             continue
         if any(_contains(keyword) for keyword in keywords):
             return intent

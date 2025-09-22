@@ -507,9 +507,6 @@ def _handle_silence(
     )
     if state["silence_count"] == 1:
         return _respond_with_gather(state, reprompt, action=action)
-    if state["silence_count"] == 2:
-        state["stage"] = "follow_up"
-        return _respond_with_gather(state, ANYTHING_ELSE_PROMPT)
     return _respond_with_goodbye(state)
 
 
