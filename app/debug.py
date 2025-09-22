@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional
 import itertools
 
+from app.persistence import transcript_get
+
 router = APIRouter()
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,3 +36,10 @@ def debug_logs(n: Optional[int] = Query(50, ge=1, le=500)):
     lines = LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
     tail = list(itertools.islice(lines, max(0, len(lines) - (n or 50)), None))
     return PlainTextResponse("\n".join(tail), status_code=200)
+
+
+@router.get("/_debug/transcript")
+def debug_transcript(sid: str = Query(..., alias="sid")):
+    call_sid = (sid or "").strip()
+    lines = transcript_get(call_sid) if call_sid else []
+    return JSONResponse({"call_sid": call_sid, "lines": lines})
