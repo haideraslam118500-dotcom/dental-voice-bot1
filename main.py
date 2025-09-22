@@ -1,26 +1,27 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
-from typing import Optional, Set
+from itertools import cycle
+from threading import Lock
+from typing import Any, Dict, Mapping, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
-from app import dialogue
+from twilio.twiml.voice_response import VoiceResponse
+
 from app.config import get_settings
 from app.intent import parse_intent
 from app.logging_config import setup_logging
-from app.persistence import append_booking, append_call_record, ensure_storage, save_transcript
-from app.security import TwilioRequestValidationMiddleware
-from app.state import CallState, CallStateStore
-from app.twilio_compat import RequestValidator
-from app.twiml import (
-    gather_for_follow_up,
-    gather_for_intent,
-    gather_for_name,
-    gather_for_time,
-    respond_with_goodbye,
+from app.persistence import (
+    append_booking,
+    append_call_record,
+    ensure_storage,
+    save_transcript,
 )
+from app.security import TwilioRequestValidationMiddleware
+from app.twilio_compat import RequestValidator
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +29,66 @@ settings = get_settings()
 setup_logging(settings.debug_log_json)
 ensure_storage()
 
-voice = settings.tts_voice or settings.fallback_voice
-language = settings.language
+VOICE = settings.voice
+LANGUAGE = settings.language
 
-state_store = CallStateStore()
-completed_calls: Set[str] = set()
+OPENING_PROMPT = (
+    "Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general "
+    "information and booking appointments. Please note, I’m not a medical professional. How can I help "
+    "you today? You can ask about our opening hours, our address, our prices, or say you’d like to book an appointment."
+)
+CLARIFY_PROMPT = "Do you need our opening hours, address, prices, or would you like to book?"
+ANYTHING_ELSE_PROMPT = "Is there anything else I can help with?"
+BOOKING_NAME_PROMPT = "Sure, let's get you booked in. Could I take your first name?"
+BOOKING_NAME_REPROMPT = "Could I just take the first name for the appointment?"
+BOOKING_TIME_PROMPT_TEMPLATE = "Thanks {name}. What day and time suits you best?"
+BOOKING_TIME_REPROMPT = "What day and time would you like to come in?"
+BOOKING_CONFIRM_REPROMPT = "Should I pencil that appointment in for you?"
+BOOKING_DECLINED_PROMPT = "No problem, we won't lock anything in just yet. Is there anything else I can help with?"
+
+INFO_LINES = {
+    "hours": settings.practice.hours,
+    "address": settings.practice.address,
+    "prices": settings.practice.prices,
+}
+
+GOODBYES = [
+    "Okay, have a lovely day. Goodbye.",
+    "Thanks for calling, take care. Goodbye.",
+    "Alright then, wishing you a wonderful day. Goodbye.",
+    "Thanks again for calling. Speak soon. Goodbye.",
+    "Take care and enjoy the rest of your day. Goodbye.",
+]
+_goodbye_cycle = cycle(GOODBYES)
+
+NEGATIVE_RESPONSES = {
+    "no",
+    "no thanks",
+    "no thank you",
+    "nothing else",
+    "that's all",
+    "that is all",
+    "we're good",
+    "were good",
+    "nah",
+    "nope",
+}
+POSITIVE_RESPONSES = {
+    "yes",
+    "yeah",
+    "yep",
+    "sure",
+    "ok",
+    "okay",
+    "alright",
+    "please",
+    "sounds good",
+}
+
+app = FastAPI()
 
 validator = RequestValidator(settings.twilio_auth_token) if settings.twilio_auth_token else None
-
 protected_paths = ("/voice", "/gather-intent", "/gather-booking", "/status")
-app = FastAPI()
 app.add_middleware(
     TwilioRequestValidationMiddleware,
     validator=validator,
@@ -45,232 +96,338 @@ app.add_middleware(
     protected_paths=protected_paths,
 )
 
+_state_lock = Lock()
+_call_states: Dict[str, Dict[str, Any]] = {}
 
-@app.get("/health")
-async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok"})
+
+def _initial_state(call_sid: str, form_data: Mapping[str, Any]) -> Dict[str, Any]:
+    metadata = {
+        "from": form_data.get("From"),
+        "to": form_data.get("To"),
+        "direction": form_data.get("Direction"),
+        "account_sid": form_data.get("AccountSid"),
+    }
+    return {
+        "call_sid": call_sid,
+        "transcript": [],
+        "retries": 0,
+        "intent": None,
+        "caller_name": None,
+        "requested_time": None,
+        "started_at": datetime.now(tz=timezone.utc),
+        "transcript_file": None,
+        "stage": "intent",
+        "silence_count": 0,
+        "greeted": False,
+        "booking_logged": False,
+        "metadata": metadata,
+    }
+
+
+def _get_state(
+    call_sid: str,
+    form_data: Optional[Mapping[str, Any]] = None,
+    *,
+    create: bool = True,
+) -> Optional[Dict[str, Any]]:
+    with _state_lock:
+        state = _call_states.get(call_sid)
+        if state is None and create:
+            state = _initial_state(call_sid, dict(form_data or {}))
+            _call_states[call_sid] = state
+        if state is not None and form_data:
+            metadata = state.setdefault("metadata", {})
+            for key, form_key in (
+                ("from", "From"),
+                ("to", "To"),
+                ("direction", "Direction"),
+                ("account_sid", "AccountSid"),
+            ):
+                value = form_data.get(form_key)
+                if value:
+                    metadata[key] = value
+            duration = form_data.get("CallDuration")
+            if duration:
+                metadata["duration_sec"] = duration
+        return state
+
+
+def _pop_state(call_sid: str) -> Optional[Dict[str, Any]]:
+    with _state_lock:
+        return _call_states.pop(call_sid, None)
+
+
+def _next_goodbye() -> str:
+    return next(_goodbye_cycle)
 
 
 def _twiml_response(twiml: str) -> Response:
     return Response(content=twiml, media_type="application/xml")
 
 
-def _initial_prompt() -> str:
-    return dialogue.build_menu_prompt()
+def create_gather_twiml(
+    prompt: str,
+    *,
+    action: str,
+    voice: str,
+    language: str,
+    hints: Optional[str] = None,
+    timeout: int = 5,
+) -> str:
+    response = VoiceResponse()
+    gather_kwargs = {
+        "input": "speech",
+        "action": action,
+        "method": "POST",
+        "timeout": timeout,
+        "speech_timeout": "auto",
+        "barge_in": True,
+        "language": language,
+    }
+    if hints:
+        gather_kwargs["hints"] = hints
+    gather = response.gather(**gather_kwargs)
+    gather.say(prompt, voice=voice, language=language)
+    return str(response)
 
 
-def _initial_reprompt() -> str:
-    return dialogue.compose_initial_reprompt()
+def create_goodbye_twiml(message: str, *, voice: str, language: str) -> str:
+    response = VoiceResponse()
+    response.say(message, voice=voice, language=language)
+    response.hangup()
+    return str(response)
 
 
-def _continuation_prompt() -> str:
-    holder = dialogue.pick_holder()
-    return (
-        f"{holder} What else can I help with? You can ask about our opening hours, our address, our prices, "
-        "or let me know if you'd like to book an appointment."
-    )
+def _remember_agent_line(state: Dict[str, Any], text: str) -> None:
+    text = (text or "").strip()
+    if text:
+        state["transcript"].append(f"[Agent] {text}")
 
 
-def _intent_clarifier_prompt() -> str:
-    clarifier = dialogue.pick_clarifier()
-    return (
-        f"{clarifier} You can ask about our opening hours, our address, our prices, or say you'd like to "
-        "book an appointment."
-    )
+def _remember_caller_line(state: Dict[str, Any], text: str) -> None:
+    text = (text or "").strip()
+    if text:
+        state["transcript"].append(f"[Caller] {text}")
 
 
-def _name_clarifier_prompt() -> str:
-    return dialogue.pick_name_clarifier()
+def _respond_with_gather(
+    state: Dict[str, Any],
+    prompt: str,
+    *,
+    action: str = "/gather-intent",
+    hints: Optional[str] = None,
+) -> Response:
+    _remember_agent_line(state, prompt)
+    twiml = create_gather_twiml(prompt, action=action, voice=VOICE, language=LANGUAGE, hints=hints)
+    return _twiml_response(twiml)
 
 
-def _time_clarifier_prompt() -> str:
-    return dialogue.pick_time_clarifier()
+def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
+    message = _next_goodbye()
+    _remember_agent_line(state, message)
+    state["stage"] = "completed"
+    logger.info("Ending call", extra={"call_sid": state.get("call_sid"), "message": message})
+    return _twiml_response(create_goodbye_twiml(message, voice=VOICE, language=LANGUAGE))
 
 
-def _anything_else_prompt() -> str:
-    return dialogue.compose_anything_else_prompt()
+def _booking_time_prompt(name: Optional[str]) -> str:
+    if name:
+        return BOOKING_TIME_PROMPT_TEMPLATE.format(name=name)
+    return "Thanks. What day and time suits you best?"
 
 
-def _extract_name(text: str) -> Optional[str]:
+def _booking_confirmation_prompt(name: Optional[str], requested_time: Optional[str]) -> str:
+    when = requested_time or "that time"
+    if name:
+        return f"Thanks {name}. I'll note {when}. Does that work for you?"
+    return f"Thanks. I'll note {when}. Does that work for you?"
+
+
+def _booking_confirmed_message(name: Optional[str], requested_time: Optional[str]) -> str:
+    when = requested_time or "that time"
+    if name:
+        return f"Brilliant, {name}. I've noted {when} and the team will confirm shortly. {ANYTHING_ELSE_PROMPT}"
+    return f"Brilliant. I've noted {when} and the team will confirm shortly. {ANYTHING_ELSE_PROMPT}"
+
+
+def _extract_first_name(text: str) -> Optional[str]:
     cleaned = text.strip()
     if not cleaned:
         return None
     lowered = cleaned.lower()
-    for prefix in ("my name is", "it's", "its", "this is", "i am", "i'm"):
+    for prefix in ("my name is", "it's", "its", "this is", "i am", "i'm", "call me"):
         if lowered.startswith(prefix):
             cleaned = cleaned[len(prefix) :].strip()
             break
-    parts = cleaned.replace(",", " ").split()
+    parts = [piece for piece in re.split(r"[^a-zA-Z]+", cleaned) if piece]
     if not parts:
         return None
-    name = parts[0]
-    if not name:
-        return None
-    return name.capitalize()
+    return parts[0].capitalize()
 
 
-def _reset_state(state: CallState, form_data) -> None:
-    state.caller_name = None
-    state.intent = None
-    state.requested_time = None
-    state.transcript.clear()
-    state.awaiting = "intent"
-    state.retries = {"intent": 0, "name": 0, "time": 0}
-    state.silence_count = 0
-    state.completed = False
-    state.transcript_file = None
-    state.final_goodbye = None
-    state.has_greeted = False
-    state.prompted_after_greeting = False
-    state.metadata = {
-        "from": form_data.get("From"),
-        "to": form_data.get("To"),
-        "direction": form_data.get("Direction"),
-        "account_sid": form_data.get("AccountSid"),
-        "started_at": datetime.now(tz=timezone.utc).isoformat(),
-    }
+def _safe_int(value: Any) -> int:
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return 0
 
 
-def _goodbye(state: CallState) -> Response:
-    message = dialogue.pick_goodbye()
-    state.final_goodbye = message
-    state.completed = True
-    state.add_system_line(message)
-    logger.info("Ending call", extra={"call_sid": state.call_sid, "goodbye": message})
-    return _twiml_response(respond_with_goodbye(message, voice, language))
-
-
-def _handle_silence(state: CallState, stage: str) -> Response:
-    state.silence_count += 1
+def _handle_silence(
+    state: Dict[str, Any],
+    *,
+    reprompt: str,
+    action: str = "/gather-intent",
+) -> Response:
+    state["silence_count"] = state.get("silence_count", 0) + 1
+    state["retries"] = state.get("retries", 0) + 1
     logger.info(
         "Silence detected",
-        extra={"call_sid": state.call_sid, "stage": stage, "count": state.silence_count},
+        extra={"call_sid": state.get("call_sid"), "count": state["silence_count"], "stage": state.get("stage")},
     )
-    if state.awaiting == "anything_else":
-        return _goodbye(state)
-    if state.silence_count >= 2:
-        state.awaiting = "anything_else"
-        prompt = _anything_else_prompt()
-        state.add_system_line(prompt)
-        return _twiml_response(gather_for_follow_up(prompt, voice, language))
-    if stage == "name":
-        prompt = _name_clarifier_prompt()
-        state.add_system_line(prompt)
-        return _twiml_response(gather_for_name(prompt, voice, language))
-    if stage == "time":
-        prompt = _time_clarifier_prompt()
-        state.add_system_line(prompt)
-        return _twiml_response(gather_for_time(prompt, voice, language))
-    prompt = _intent_clarifier_prompt()
-    state.add_system_line(prompt)
-    return _twiml_response(gather_for_intent(prompt, voice, language))
+    if state["silence_count"] == 1:
+        return _respond_with_gather(state, reprompt, action=action)
+    if state["silence_count"] == 2:
+        state["stage"] = "follow_up"
+        return _respond_with_gather(state, ANYTHING_ELSE_PROMPT)
+    return _respond_with_goodbye(state)
 
 
-def _respond_with_info(state: CallState, intent: str) -> Response:
-    state.intent = intent
-    state.awaiting = "anything_else"
-    state.reset_retries("intent")
-    prompt = dialogue.compose_info_prompt(intent)
-    state.add_system_line(prompt)
-    logger.info("Providing information", extra={"call_sid": state.call_sid, "intent": intent})
-    return _twiml_response(gather_for_follow_up(prompt, voice, language))
+def _start_booking(state: Dict[str, Any]) -> Response:
+    state["intent"] = "booking"
+    state["caller_name"] = None
+    state["requested_time"] = None
+    state["stage"] = "booking_name"
+    state["silence_count"] = 0
+    state["retries"] = 0
+    logger.info("Booking flow started", extra={"call_sid": state.get("call_sid")})
+    return _respond_with_gather(state, BOOKING_NAME_PROMPT, action="/gather-booking")
 
 
-def _start_booking(state: CallState) -> Response:
-    state.intent = "booking"
-    state.awaiting = "name"
-    state.reset_retries("intent")
-    state.reset_retries("name")
-    prompt = dialogue.compose_booking_name_prompt()
-    state.add_system_line(prompt)
-    logger.info("Booking flow started", extra={"call_sid": state.call_sid})
-    return _twiml_response(gather_for_name(prompt, voice, language))
-
-
-def _ask_for_time(state: CallState) -> Response:
-    prompt = dialogue.compose_booking_time_prompt(state.caller_name)
-    state.add_system_line(prompt)
-    state.awaiting = "time"
-    state.reset_retries("time")
-    logger.info(
-        "Captured caller name",
-        extra={"call_sid": state.call_sid, "caller_name": state.caller_name},
-    )
-    return _twiml_response(gather_for_time(prompt, voice, language))
-
-
-def _confirm_booking(state: CallState) -> Response:
-    prompt = dialogue.compose_booking_confirmation(state.caller_name, state.requested_time or "")
-    state.add_system_line(prompt)
-    state.awaiting = "anything_else"
-    logger.info(
-        "Captured booking request",
-        extra={
-            "call_sid": state.call_sid,
-            "caller_name": state.caller_name,
-            "requested_time": state.requested_time,
-        },
-    )
-    return _twiml_response(gather_for_follow_up(prompt, voice, language))
-
-
-def _handle_intent(state: CallState, intent: Optional[str], user_input: str) -> Response:
-    if state.awaiting == "anything_else":
-        return _handle_anything_else(state, intent, user_input)
-
-    if intent == "goodbye":
-        return _goodbye(state)
-    if intent == "affirm":
-        prompt = _continuation_prompt()
-        state.add_system_line(prompt)
-        return _twiml_response(gather_for_intent(prompt, voice, language))
-    if intent in {"hours", "address", "prices"}:
-        return _respond_with_info(state, intent)
+def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_input: str) -> Response:
+    lowered = user_input.lower().strip()
+    if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
+        return _respond_with_goodbye(state)
+    if intent in INFO_LINES:
+        message = f"{INFO_LINES[intent]} {ANYTHING_ELSE_PROMPT}"
+        state["intent"] = intent
+        state["stage"] = "follow_up"
+        state["retries"] = 0
+        logger.info("Providing information", extra={"call_sid": state.get("call_sid"), "intent": intent})
+        return _respond_with_gather(state, message)
     if intent == "booking":
         return _start_booking(state)
-    state.bump_retry("intent")
-    prompt = _intent_clarifier_prompt()
-    state.add_system_line(prompt)
-    return _twiml_response(gather_for_intent(prompt, voice, language))
+    if intent == "affirm" or lowered in POSITIVE_RESPONSES:
+        state["stage"] = "intent"
+        return _respond_with_gather(state, CLARIFY_PROMPT)
+    state["intent"] = state.get("intent") or "other"
+    return _respond_with_gather(state, CLARIFY_PROMPT)
 
 
-def _handle_anything_else(state: CallState, intent: Optional[str], user_input: str) -> Response:
+def _handle_follow_up(state: Dict[str, Any], intent: Optional[str], user_input: str) -> Response:
     lowered = user_input.lower().strip()
-    if intent == "goodbye" or lowered in {"no", "no thanks", "nah", "nope", "that's all", "nothing else"}:
-        return _goodbye(state)
-    if intent == "affirm" or lowered in {"yes", "yeah", "yep", "sure"}:
-        prompt = _continuation_prompt()
-        state.add_system_line(prompt)
-        state.awaiting = "intent"
-        return _twiml_response(gather_for_intent(prompt, voice, language))
-    if intent in {"hours", "address", "prices", "booking"}:
-        state.awaiting = "intent"
-        return _handle_intent(state, intent, user_input)
-    prompt = _intent_clarifier_prompt()
-    state.add_system_line(prompt)
-    state.awaiting = "intent"
-    return _twiml_response(gather_for_intent(prompt, voice, language))
+    if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
+        return _respond_with_goodbye(state)
+    if intent in INFO_LINES or intent == "booking":
+        state["stage"] = "intent"
+        return _handle_primary_intent(state, intent, user_input)
+    if intent == "affirm" or lowered in POSITIVE_RESPONSES:
+        state["stage"] = "intent"
+        return _respond_with_gather(state, CLARIFY_PROMPT)
+    state["stage"] = "intent"
+    return _respond_with_gather(state, CLARIFY_PROMPT)
 
 
-def _record_call_summary(call_sid: str, state: CallState, form_data) -> None:
-    transcript_path = save_transcript(call_sid, state.transcript)
-    state.transcript_file = str(transcript_path)
-    if state.intent == "booking" and state.requested_time:
-        append_booking(call_sid, state.caller_name, state.requested_time)
+def _handle_booking_name(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+    if intent == "goodbye":
+        return _respond_with_goodbye(state)
+    if intent in INFO_LINES:
+        state["stage"] = "intent"
+        return _handle_primary_intent(state, intent, user_input)
+    name = _extract_first_name(user_input)
+    if not name:
+        state["retries"] += 1
+        return _respond_with_gather(state, BOOKING_NAME_REPROMPT, action="/gather-booking")
+    state["caller_name"] = name
+    state["stage"] = "booking_time"
+    state["silence_count"] = 0
+    logger.info(
+        "Captured caller name",
+        extra={"call_sid": state.get("call_sid"), "caller_name": name},
+    )
+    return _respond_with_gather(state, _booking_time_prompt(name), action="/gather-booking")
 
-    summary = {
-        "call_sid": call_sid,
-        "finished_at": datetime.now(tz=timezone.utc).isoformat(),
-        "direction": form_data.get("Direction") or state.metadata.get("direction"),
-        "from": form_data.get("From") or state.metadata.get("from"),
-        "to": form_data.get("To") or state.metadata.get("to"),
-        "duration_sec": int(form_data.get("CallDuration") or state.metadata.get("duration") or 0),
-        "caller_name": state.caller_name,
-        "intent": state.intent or "unknown",
-        "requested_time": state.requested_time,
-        "transcript_file": str(transcript_path),
-    }
-    append_call_record(summary)
+
+def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+    if intent == "goodbye":
+        return _respond_with_goodbye(state)
+    if intent in INFO_LINES:
+        state["stage"] = "intent"
+        return _handle_primary_intent(state, intent, user_input)
+    state["requested_time"] = user_input
+    state["stage"] = "booking_confirm"
+    state["silence_count"] = 0
+    logger.info(
+        "Captured requested time",
+        extra={"call_sid": state.get("call_sid"), "requested_time": user_input},
+    )
+    return _respond_with_gather(
+        state,
+        _booking_confirmation_prompt(state.get("caller_name"), state.get("requested_time")),
+        action="/gather-booking",
+    )
+
+
+def _handle_booking_confirmation(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+    lowered = user_input.lower().strip()
+    if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
+        state["stage"] = "follow_up"
+        return _respond_with_gather(state, BOOKING_DECLINED_PROMPT)
+    if intent in INFO_LINES:
+        state["stage"] = "intent"
+        return _handle_primary_intent(state, intent, user_input)
+    if intent == "affirm" or lowered in POSITIVE_RESPONSES:
+        if not state.get("booking_logged") and state.get("requested_time"):
+            append_booking(
+                state.get("call_sid", ""),
+                state.get("caller_name"),
+                state.get("requested_time"),
+            )
+            state["booking_logged"] = True
+            logger.info(
+                "Logged booking request",
+                extra={
+                    "call_sid": state.get("call_sid"),
+                    "caller_name": state.get("caller_name"),
+                    "requested_time": state.get("requested_time"),
+                },
+            )
+        state["stage"] = "follow_up"
+        state["intent"] = "booking"
+        return _respond_with_gather(
+            state,
+            _booking_confirmed_message(state.get("caller_name"), state.get("requested_time")),
+        )
+    # Treat other responses as a revised time request
+    state["requested_time"] = user_input
+    logger.info(
+        "Clarifying booking time",
+        extra={"call_sid": state.get("call_sid"), "requested_time": user_input},
+    )
+    return _respond_with_gather(
+        state,
+        _booking_confirmation_prompt(state.get("caller_name"), state.get("requested_time")),
+        action="/gather-booking",
+    )
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    return JSONResponse({"ok": True})
+
+
+def _missing_call_sid_response() -> Response:
+    fallback = "Thanks for calling. Goodbye."
+    return _twiml_response(create_goodbye_twiml(fallback, voice=VOICE, language=LANGUAGE))
 
 
 @app.post("/voice")
@@ -279,26 +436,20 @@ async def voice_webhook(request: Request) -> Response:
     call_sid = form.get("CallSid")
     if not call_sid:
         logger.warning("CallSid missing on /voice request")
-        return _goodbye(CallState(call_sid="unknown"))
+        return _missing_call_sid_response()
 
-    state = state_store.get_or_create(call_sid)
-    if not state.has_greeted:
-        _reset_state(state, form)
-        prompt = _initial_prompt()
-        state.add_system_line(prompt)
-        state.has_greeted = True
+    state = _get_state(call_sid, form)
+    assert state is not None
+
+    if not state.get("greeted"):
+        state["greeted"] = True
+        state["stage"] = "intent"
+        state["silence_count"] = 0
+        state["retries"] = 0
         logger.info("Incoming call", extra={"call_sid": call_sid})
-        return _twiml_response(gather_for_intent(prompt, voice, language))
+        return _respond_with_gather(state, OPENING_PROMPT)
 
-    if not state.prompted_after_greeting and state.awaiting == "intent":
-        prompt = _initial_reprompt()
-        state.add_system_line(prompt)
-        state.prompted_after_greeting = True
-        logger.info("Silence after greeting", extra={"call_sid": call_sid})
-        return _twiml_response(gather_for_intent(prompt, voice, language))
-
-    stage = state.awaiting if state.awaiting in {"anything_else", "name", "time"} else "intent"
-    return _handle_silence(state, stage)
+    return _respond_with_gather(state, CLARIFY_PROMPT)
 
 
 @app.post("/gather-intent")
@@ -306,31 +457,30 @@ async def gather_intent_route(request: Request) -> Response:
     form = await request.form()
     call_sid = form.get("CallSid")
     if not call_sid:
-        logger.warning("CallSid missing on /gather-intent")
-        return _goodbye(CallState(call_sid="unknown"))
+        logger.warning("CallSid missing on /gather-intent request")
+        return _missing_call_sid_response()
 
-    state = state_store.get_or_create(call_sid)
+    state = _get_state(call_sid, form)
+    assert state is not None
+
     speech_result = (form.get("SpeechResult") or "").strip()
-    user_input = speech_result
+    if not speech_result:
+        reprompt = CLARIFY_PROMPT if state.get("stage") == "intent" else ANYTHING_ELSE_PROMPT
+        return _handle_silence(state, reprompt=reprompt)
 
-    if not user_input:
-        stage = state.awaiting if state.awaiting in {"anything_else", "name", "time"} else "intent"
-        return _handle_silence(state, stage)
-
-    state.add_caller_line(user_input)
-    state.reset_silence()
+    _remember_caller_line(state, speech_result)
+    state["silence_count"] = 0
 
     intent = parse_intent(speech_result)
     logger.info(
-        "Parsed caller intent",
-        extra={"call_sid": call_sid, "intent": intent, "stage": state.awaiting},
+        "Parsed caller input",
+        extra={"call_sid": call_sid, "intent": intent, "stage": state.get("stage")},
     )
 
-    if state.awaiting == "anything_else":
-        return _handle_anything_else(state, intent, user_input)
-
-    state.awaiting = "intent"
-    return _handle_intent(state, intent, user_input)
+    if state.get("stage") == "follow_up":
+        return _handle_follow_up(state, intent, speech_result)
+    state["stage"] = "intent"
+    return _handle_primary_intent(state, intent, speech_result)
 
 
 @app.post("/gather-booking")
@@ -338,56 +488,36 @@ async def gather_booking_route(request: Request) -> Response:
     form = await request.form()
     call_sid = form.get("CallSid")
     if not call_sid:
-        logger.warning("CallSid missing on /gather-booking")
-        return _goodbye(CallState(call_sid="unknown"))
+        logger.warning("CallSid missing on /gather-booking request")
+        return _missing_call_sid_response()
 
-    state = state_store.get_or_create(call_sid)
+    state = _get_state(call_sid, form)
+    assert state is not None
+
     speech_result = (form.get("SpeechResult") or "").strip()
-    user_input = speech_result
+    stage = state.get("stage")
+    if not speech_result:
+        if stage == "booking_name":
+            return _handle_silence(state, reprompt=BOOKING_NAME_REPROMPT, action="/gather-booking")
+        if stage == "booking_time":
+            return _handle_silence(state, reprompt=BOOKING_TIME_REPROMPT, action="/gather-booking")
+        if stage == "booking_confirm":
+            return _handle_silence(state, reprompt=BOOKING_CONFIRM_REPROMPT, action="/gather-booking")
+        return _handle_silence(state, reprompt=CLARIFY_PROMPT)
 
-    if not user_input:
-        stage = state.awaiting if state.awaiting in {"name", "time"} else "intent"
-        return _handle_silence(state, stage)
-
-    state.add_caller_line(user_input)
-    state.reset_silence()
+    _remember_caller_line(state, speech_result)
+    state["silence_count"] = 0
 
     intent = parse_intent(speech_result)
 
-    if state.awaiting == "name":
-        if intent == "goodbye":
-            return _goodbye(state)
-        if intent in {"hours", "address", "prices"}:
-            state.awaiting = "intent"
-            return _handle_intent(state, intent, user_input)
-        if intent == "affirm":
-            prompt = _name_clarifier_prompt()
-            state.add_system_line(prompt)
-            return _twiml_response(gather_for_name(prompt, voice, language))
-        name = _extract_name(user_input)
-        if not name:
-            state.bump_retry("name")
-            prompt = _name_clarifier_prompt()
-            state.add_system_line(prompt)
-            return _twiml_response(gather_for_name(prompt, voice, language))
-        state.caller_name = name
-        return _ask_for_time(state)
+    if stage == "booking_name":
+        return _handle_booking_name(state, speech_result, intent)
+    if stage == "booking_time":
+        return _handle_booking_time(state, speech_result, intent)
+    if stage == "booking_confirm":
+        return _handle_booking_confirmation(state, speech_result, intent)
 
-    if state.awaiting == "time":
-        if intent == "goodbye":
-            return _goodbye(state)
-        if intent in {"hours", "address", "prices"}:
-            state.awaiting = "intent"
-            return _handle_intent(state, intent, user_input)
-        if intent == "affirm":
-            prompt = _time_clarifier_prompt()
-            state.add_system_line(prompt)
-            return _twiml_response(gather_for_time(prompt, voice, language))
-        state.requested_time = user_input
-        state.reset_retries("time")
-        return _confirm_booking(state)
-
-    return _handle_intent(state, intent, user_input)
+    return _handle_primary_intent(state, intent, speech_result)
 
 
 @app.post("/status")
@@ -401,25 +531,38 @@ async def status_callback(request: Request) -> JSONResponse:
     if not call_sid:
         return JSONResponse({"ok": True})
 
-    state = state_store.get(call_sid)
-    if state:
-        state.metadata.update(
-            {
-                "direction": form.get("Direction") or state.metadata.get("direction"),
-                "from": form.get("From") or state.metadata.get("from"),
-                "to": form.get("To") or state.metadata.get("to"),
-                "duration": form.get("CallDuration") or state.metadata.get("duration"),
-            }
-        )
+    state = _get_state(call_sid, form, create=False)
 
     if call_status == "completed":
-        if call_sid in completed_calls:
-            return JSONResponse({"ok": True})
-        completed_calls.add(call_sid)
-        state = state_store.remove(call_sid) or CallState(call_sid=call_sid)
-        _record_call_summary(call_sid, state, form)
+        state = state or _initial_state(call_sid, dict(form))
+        transcript_path = save_transcript(call_sid, state.get("transcript", []))
+        state["transcript_file"] = str(transcript_path)
+
+        if state.get("intent") == "booking" and state.get("requested_time") and not state.get("booking_logged"):
+            append_booking(call_sid, state.get("caller_name"), state.get("requested_time"))
+            state["booking_logged"] = True
+
+        metadata = state.get("metadata", {})
+        summary = {
+            "call_sid": call_sid,
+            "finished_at": datetime.now(tz=timezone.utc).isoformat(),
+            "direction": form.get("Direction") or metadata.get("direction"),
+            "from": form.get("From") or metadata.get("from"),
+            "to": form.get("To") or metadata.get("to"),
+            "duration_sec": _safe_int(form.get("CallDuration") or metadata.get("duration_sec")),
+            "caller_name": state.get("caller_name"),
+            "intent": state.get("intent") or "other",
+            "requested_time": state.get("requested_time"),
+            "transcript_file": str(transcript_path),
+        }
+        append_call_record(summary)
+        _pop_state(call_sid)
+        logger.info(
+            "Call completed",
+            extra={"call_sid": call_sid, "transcript_file": str(transcript_path)},
+        )
 
     return JSONResponse({"ok": True})
 
 
-__all__ = ["app"]
+__all__ = ["app", "create_gather_twiml", "create_goodbye_twiml"]

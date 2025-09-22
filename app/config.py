@@ -3,14 +3,16 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
+import yaml
 from dotenv import load_dotenv
 
 
-_DEF_VOICE = "Polly.Amy"
-_FALLBACK_VOICE = "alice"
-_LANGUAGE = "en-GB"
+PRACTICE_CONFIG_PATH = Path("config/practice.yml")
+FALLBACK_VOICE = "alice"
+FALLBACK_LANGUAGE = "en-GB"
 
 load_dotenv()
 
@@ -23,15 +25,57 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 @dataclass(slots=True)
+class PracticeConfig:
+    practice_name: str
+    voice: Optional[str]
+    language: Optional[str]
+    hours: str
+    address: str
+    prices: str
+
+
+def _load_practice_config() -> PracticeConfig:
+    defaults: dict[str, Any] = {
+        "practice_name": "Oak Dental",
+        "voice": "Polly.Amy",
+        "language": "en-GB",
+        "hours": (
+            "We’re open Monday to Friday nine to five; Saturday ten to one; Sundays and bank holidays closed."
+        ),
+        "address": "12 High Street, Oakford, OX1 2AB.",
+        "prices": "Check-up forty five pounds, hygiene sixty five, whitening from two hundred and fifty.",
+    }
+
+    if PRACTICE_CONFIG_PATH.exists():
+        try:
+            loaded = yaml.safe_load(PRACTICE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+        except OSError as exc:  # pragma: no cover - configuration read errors are rare
+            raise RuntimeError(f"Unable to read practice configuration: {exc}") from exc
+        except yaml.YAMLError as exc:  # pragma: no cover - invalid YAML should crash early
+            raise RuntimeError(f"Invalid YAML in {PRACTICE_CONFIG_PATH}: {exc}") from exc
+        defaults.update({k: v for k, v in loaded.items() if v is not None})
+
+    return PracticeConfig(
+        practice_name=str(defaults.get("practice_name", "Oak Dental")),
+        voice=defaults.get("voice"),
+        language=defaults.get("language"),
+        hours=str(defaults.get("hours", "")),
+        address=str(defaults.get("address", "")),
+        prices=str(defaults.get("prices", "")),
+    )
+
+
+@dataclass(slots=True)
 class Settings:
     verify_twilio_signatures: bool
     debug_log_json: bool
     twilio_auth_token: Optional[str]
     twilio_account_sid: Optional[str]
     twilio_number: Optional[str]
+    voice: str
     language: str
-    tts_voice: str
     fallback_voice: str
+    practice: PracticeConfig
 
     def __post_init__(self) -> None:
         if self.verify_twilio_signatures and not self.twilio_auth_token:
@@ -42,16 +86,24 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    practice = _load_practice_config()
+    env_voice = os.getenv("TTS_VOICE")
+    env_lang = os.getenv("TTS_LANG")
+
+    voice = (env_voice or practice.voice or FALLBACK_VOICE).strip()
+    language = (env_lang or practice.language or FALLBACK_LANGUAGE).strip()
+
     return Settings(
         verify_twilio_signatures=_env_bool("VERIFY_TWILIO_SIGNATURES", False),
         debug_log_json=_env_bool("DEBUG_LOG_JSON", False),
         twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN"),
         twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID"),
         twilio_number=os.getenv("TWILIO_NUMBER"),
-        language=os.getenv("TTS_LANG", _LANGUAGE),
-        tts_voice=os.getenv("TTS_VOICE", _DEF_VOICE),
-        fallback_voice=_FALLBACK_VOICE,
+        voice=voice or FALLBACK_VOICE,
+        language=language or FALLBACK_LANGUAGE,
+        fallback_voice=FALLBACK_VOICE,
+        practice=practice,
     )
 
 
-__all__ = ["Settings", "get_settings"]
+__all__ = ["PracticeConfig", "Settings", "get_settings"]

@@ -1,105 +1,57 @@
-import random
 import xml.etree.ElementTree as ET
 
-from app import dialogue
-from app.twiml import (
-    gather_for_follow_up,
-    gather_for_intent,
-    gather_for_name,
-    gather_for_time,
-    respond_with_goodbye,
-)
+from main import create_gather_twiml, create_goodbye_twiml
 
-VOICE = "alice"
-LANG = "en-GB"
+VOICE = "Polly.Amy"
+LANGUAGE = "en-GB"
 
 
-def _get_gather(xml: str) -> ET.Element:
+def _parse_gather(xml: str) -> ET.Element:
     root = ET.fromstring(xml)
     gather = root.find("Gather")
-    assert gather is not None, "Expected a Gather element"
+    assert gather is not None, "Expected Gather element"
     return gather
 
 
-def test_gather_intent_is_speech_only():
-    twiml = gather_for_intent("Tell me how to help", VOICE, LANG)
-    gather = _get_gather(twiml)
+def test_gather_is_speech_only_and_barge_in():
+    xml = create_gather_twiml(
+        "Hello there",
+        action="/gather-intent",
+        voice=VOICE,
+        language=LANGUAGE,
+    )
+    gather = _parse_gather(xml)
     assert gather.attrib["input"] == "speech"
-    assert "numDigits" not in gather.attrib
     assert gather.attrib["action"] == "/gather-intent"
-
-
-def test_follow_up_gather_is_speech_only():
-    twiml = gather_for_follow_up("Anything else?", VOICE, LANG)
-    gather = _get_gather(twiml)
-    assert gather.attrib["input"] == "speech"
+    assert gather.attrib["method"] == "POST"
+    assert gather.attrib.get("timeout") in {"5", "5.0"}
+    assert gather.attrib.get("speechTimeout") == "auto"
+    assert gather.attrib["language"] == LANGUAGE
+    assert gather.attrib.get("bargeIn") in {"true", "True"}
     assert "numDigits" not in gather.attrib
-    assert gather.attrib["action"] == "/gather-intent"
-
-
-def test_hours_prompt_contains_hours_line():
-    random.seed(1)
-    prompt = dialogue.compose_info_prompt("hours")
-    twiml = gather_for_follow_up(prompt, VOICE, LANG)
-    say = _get_gather(twiml).find("Say")
-    assert say is not None
-    assert dialogue.HOURS_LINE in (say.text or "")
-
-
-def test_address_prompt_contains_address_line():
-    random.seed(2)
-    prompt = dialogue.compose_info_prompt("address")
-    twiml = gather_for_follow_up(prompt, VOICE, LANG)
-    say = _get_gather(twiml).find("Say")
-    assert say is not None
-    assert dialogue.ADDRESS_LINE in (say.text or "")
-
-
-def test_prices_prompt_contains_prices_line():
-    random.seed(3)
-    prompt = dialogue.compose_info_prompt("prices")
-    twiml = gather_for_follow_up(prompt, VOICE, LANG)
-    say = _get_gather(twiml).find("Say")
-    assert say is not None
-    assert dialogue.PRICES_LINE in (say.text or "")
-
-
-def test_booking_name_prompt_mentions_name():
-    random.seed(4)
-    prompt = dialogue.compose_booking_name_prompt()
-    twiml = gather_for_name(prompt, VOICE, LANG)
-    gather = _get_gather(twiml)
-    assert gather.attrib["input"] == "speech"
     say = gather.find("Say")
     assert say is not None
-    assert "name" in (say.text or "").lower()
+    assert (say.text or "").strip() == "Hello there"
 
 
-def test_booking_confirmation_mentions_time_and_name():
-    random.seed(5)
-    prompt = dialogue.compose_booking_confirmation("Sam", "Monday at 2")
-    twiml = gather_for_follow_up(prompt, VOICE, LANG)
-    say = _get_gather(twiml).find("Say")
-    assert say is not None
-    text = say.text or ""
-    assert "Monday at 2" in text
-    assert "Sam" in text
+def test_gather_hints_are_optional():
+    xml = create_gather_twiml(
+        "Prompt",
+        action="/gather-intent",
+        voice=VOICE,
+        language=LANGUAGE,
+        hints="hours,prices",
+    )
+    gather = _parse_gather(xml)
+    assert gather.attrib.get("hints") == "hours,prices"
 
 
-def test_booking_time_prompt_is_speech_only():
-    random.seed(6)
-    prompt = dialogue.compose_booking_time_prompt("Sam")
-    twiml = gather_for_time(prompt, VOICE, LANG)
-    gather = _get_gather(twiml)
-    assert gather.attrib["input"] == "speech"
-    assert "numDigits" not in gather.attrib
-    assert gather.attrib["action"] == "/gather-booking"
-
-
-def test_goodbye_twiml_hangs_up():
-    random.seed(7)
-    message = dialogue.pick_goodbye()
-    twiml = respond_with_goodbye(message, VOICE, LANG)
-    root = ET.fromstring(twiml)
+def test_goodbye_twiml_includes_hangup():
+    xml = create_goodbye_twiml(
+        "Bye for now",
+        voice=VOICE,
+        language=LANGUAGE,
+    )
+    root = ET.fromstring(xml)
     assert root.find("Say") is not None
     assert root.find("Hangup") is not None

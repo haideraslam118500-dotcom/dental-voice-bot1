@@ -51,7 +51,7 @@ jobs:
             const match = path.match(/suggestions-(\d{4}-\d{2}-\d{2})\.md$/);
             const dateStr = match ? match[1] : new Date().toISOString().slice(0, 10);
             const title = `Daily AI Receptionist improvements ${dateStr}`;
-            const codexBlock = '**Codex task**\n```\nPlease implement today\'s receptionist suggestions above in a new pull request.\n```';
+            const codexBlock = '**Codex Task**\n```\nPlease implement today\'s receptionist suggestions above in a new pull request.\n```';
             const body = `${content}\n\n${codexBlock}`;
             const { data: issues } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
