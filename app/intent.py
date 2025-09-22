@@ -1,25 +1,65 @@
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Iterable, Optional
 
-_INTENT_KEYWORDS = {
-    "hours": {"hours", "open", "opening", "closing"},
-    "address": {"address", "where", "located", "location", "find", "directions"},
-    "prices": {"price", "prices", "cost", "fee", "fees", "charges", "how much"},
-    "booking": {
-        "book",
-        "booking",
-        "appointment",
-        "schedule",
-        "reserve",
-        "checkup",
-        "see the dentist",
-        "visit",
-    },
+
+def _normalize(text: str) -> str:
+    text = (text or "").replace("’", "'")
+    text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _lev(a: str, b: str, limit: int = 2) -> int:
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > limit:
+        return limit + 1
+    dp = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        prev = dp[0]
+        dp[0] = i
+        for j, cb in enumerate(b, 1):
+            cur = dp[j]
+            dp[j] = min(dp[j] + 1, dp[j - 1] + 1, prev + (ca != cb))
+            prev = cur
+    return dp[-1]
+
+
+def _any_fuzzy(text: str, vocab: Iterable[str], max_dist: int = 1) -> bool:
+    tokens = text.split()
+    for raw in vocab:
+        keyword = (raw or "").replace("’", "'").lower().strip()
+        if not keyword:
+            continue
+        if " " in keyword:
+            if keyword in text:
+                return True
+            continue
+        if keyword in tokens:
+            return True
+        for token in tokens:
+            if _lev(token, keyword, limit=max_dist) <= max_dist:
+                return True
+    return False
+
+
+HOURS_KEYWORDS = {
+    "hour",
+    "hours",
+    "opening",
+    "opening hours",
+    "opening time",
+    "open hours",
+    "open",
+    "openin",
+    "closing",
+    "closing time",
+    "closing hours",
+    "clozing",
 }
 
-_AVAILABILITY_PATTERNS = {
+AVAILABILITY_KEYWORDS = {
     "availability",
     "available",
     "what do you have",
@@ -30,42 +70,95 @@ _AVAILABILITY_PATTERNS = {
     "free time",
     "free appointment",
     "open slots",
-    "what can you do tomorrow",
-    "what can you do on",
     "any slots",
     "any availability",
+    "what time u have",
+    "what time you have",
+    "book time",
+    "any time",
+    "anytime",
+    "any time works",
+    "anytime works",
+    "any time tomorrow",
+    "any time ok",
     "today",
     "tomorrow",
     "monday",
     "tuesday",
     "wednesday",
     "thursday",
+    "thur",
+    "wednsday",
+    "thurzday",
     "friday",
     "saturday",
+    "saturdy",
 }
 
-_GOODBYE_KEYWORDS = {
+ADDRESS_KEYWORDS = {
+    "address",
+    "addres",
+    "where",
+    "postcode",
+    "post code",
+    "located",
+    "location",
+    "directions",
+    "direcsion",
+    "find",
+}
+
+PRICE_KEYWORDS = {
+    "price",
+    "prices",
+    "prize",
+    "prise",
+    "cost",
+    "how much",
+    "fee",
+    "fees",
+    "charges",
+    "pricing",
+}
+
+BOOKING_KEYWORDS = {
+    "book",
+    "booking",
+    "appointment",
+    "apointment",
+    "appoinment",
+    "schedule",
+    "reserve",
+    "checkup",
+    "check-up",
+    "see the dentist",
+    "visit",
+    "buk",
+    "buking",
+    "buk appointment",
+}
+
+GOODBYE_KEYWORDS = {
     "bye",
-    "goodbye",
     "bye bye",
     "bye-bye",
-    "no thanks",
-    "no thank you",
+    "goodbye",
     "that's all",
     "thats all",
-    "nothing else",
+    "that is all",
     "that's it",
     "thats it",
     "that is it",
-    "all good",
+    "nothing else",
+    "no more",
+    "finish",
     "we're good",
     "were good",
-    "that is all",
-    "cheers that's all",
-    "cheers, that's all",
+    "no thanks",
+    "no thank you",
 }
 
-_AFFIRM_KEYWORDS = {
+AFFIRM_KEYWORDS = {
     "yes",
     "yeah",
     "yep",
@@ -77,61 +170,74 @@ _AFFIRM_KEYWORDS = {
     "sounds good",
 }
 
-def parse_intent(speech: Optional[str]) -> Optional[str]:
+
+def classify(speech: Optional[str]) -> Optional[str]:
     if not speech:
         return None
 
-    text = speech.lower()
-    text = re.sub(r"[^a-z0-9\s]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = _normalize(speech)
+    if not text:
+        return None
 
-    words = set(text.split())
-
-    def _contains(keyword: str) -> bool:
-        return keyword in text if " " in keyword else keyword in words
-
-    booking_keywords = _INTENT_KEYWORDS.get("booking", set())
-    if any(_contains(keyword) for keyword in booking_keywords):
+    if _any_fuzzy(text, BOOKING_KEYWORDS, max_dist=2):
         return "booking"
-
-    hours_keywords = _INTENT_KEYWORDS.get("hours", set())
-    if any(_contains(keyword) for keyword in hours_keywords):
+    if _any_fuzzy(text, HOURS_KEYWORDS, max_dist=1):
         return "hours"
-
-    for keyword in _GOODBYE_KEYWORDS:
-        if _contains(keyword):
-            return "goodbye"
-
-    for keyword in _AFFIRM_KEYWORDS:
-        if _contains(keyword):
-            return "affirm"
-
-    if any(pattern in text for pattern in _AVAILABILITY_PATTERNS):
+    if _any_fuzzy(text, AVAILABILITY_KEYWORDS, max_dist=2):
         return "availability"
-
-    for intent, keywords in _INTENT_KEYWORDS.items():
-        if intent in {"booking", "hours"}:
-            continue
-        if any(_contains(keyword) for keyword in keywords):
-            return intent
+    if _any_fuzzy(text, ADDRESS_KEYWORDS, max_dist=2):
+        return "address"
+    if _any_fuzzy(text, PRICE_KEYWORDS, max_dist=2):
+        return "prices"
+    if _any_fuzzy(text, GOODBYE_KEYWORDS, max_dist=2):
+        return "goodbye"
+    if _any_fuzzy(text, AFFIRM_KEYWORDS, max_dist=1):
+        return "affirm"
     return None
+
+
+def parse_intent(speech: Optional[str]) -> Optional[str]:
+    return classify(speech)
+
+
+_APPT_KEYWORDS = {
+    "check-up": "Check-up",
+    "check up": "Check-up",
+    "checkup": "Check-up",
+    "chekup": "Check-up",
+    "regular check": "Check-up",
+    "hygiene": "Hygiene",
+    "hygeine": "Hygiene",
+    "clean": "Hygiene",
+    "teeth clean": "Hygiene",
+    "scale": "Hygiene",
+    "whitening": "Whitening",
+    "white ning": "Whitening",
+    "white": "Whitening",
+    "filling": "Filling",
+    "fillin": "Filling",
+    "tooth fill": "Filling",
+    "emergency": "Emergency",
+    "urgent": "Emergency",
+}
 
 
 def extract_appt_type(text: str) -> Optional[str]:
-    """Heuristic helper to detect an appointment type mentioned inline."""
-
-    lowered = (text or "").lower()
+    lowered = _normalize(text)
     if not lowered:
         return None
 
-    types = ["check-up", "check up", "hygiene", "whitening", "filling", "emergency"]
-    for raw in types:
-        if raw in lowered:
-            normalized = raw.replace("check up", "check-up").title()
-            if normalized.startswith("Check"):
-                return "Check-up"
-            return normalized
+    tokens = lowered.split()
+    for raw, canonical in _APPT_KEYWORDS.items():
+        target = _normalize(raw)
+        if not target:
+            continue
+        if " " in target:
+            if target in lowered:
+                return canonical
+        elif target in tokens:
+            return canonical
     return None
 
 
-__all__ = ["parse_intent", "extract_appt_type"]
+__all__ = ["classify", "parse_intent", "extract_appt_type"]

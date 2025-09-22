@@ -43,6 +43,12 @@ else:
             say.text = message
             return say
 
+        def pause(self, length: Optional[str] = None) -> Element:
+            attrs: Dict[str, str] = {}
+            if length is not None:
+                attrs["length"] = str(length)
+            return SubElement(self._element, "Pause", attrs)
+
     class VoiceResponse:  # pragma: no cover - simple XML builder
         def __init__(self) -> None:
             self._root = Element("Response")
@@ -64,6 +70,12 @@ else:
                 say.set("language", language)
             say.text = message
             return say
+
+        def pause(self, length: Optional[str] = None) -> Element:
+            attrs: Dict[str, str] = {}
+            if length is not None:
+                attrs["length"] = str(length)
+            return SubElement(self._root, "Pause", attrs)
 
         def hangup(self) -> None:
             SubElement(self._root, "Hangup")

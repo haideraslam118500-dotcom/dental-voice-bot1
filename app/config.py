@@ -40,10 +40,10 @@ def _load_practice_config() -> PracticeConfig:
         "voice": "Polly.Amy",
         "language": "en-GB",
         "hours": (
-            "We’re open Monday to Friday nine to five; Saturday ten to one; Sundays and bank holidays closed."
+            "We’re open Monday to Friday nine to five, Saturday nine to one. Closed Sundays and bank holidays."
         ),
-        "address": "12 High Street, Oakford, OX1 2AB.",
-        "prices": "Check-up forty five pounds, hygiene sixty five, whitening from two hundred and fifty.",
+        "address": "We’re at 12 High Street, Oakford, OX1 2AB. Entrance next to the pharmacy.",
+        "prices": "A routine check-up is forty five pounds. Hygiene is sixty five. Whitening starts from two hundred and fifty.",
     }
 
     if PRACTICE_CONFIG_PATH.exists():
