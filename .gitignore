@@ -3,9 +3,15 @@
 __pycache__/
 *.pyc
 .env
-transcripts/
-data/
+transcripts/*
+!transcripts/.gitkeep
+data/*
+!data/.gitkeep
+codex_tasks/*
+!codex_tasks/.gitkeep
 .codex_tasks/
+logs/*
+!logs/.gitkeep
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

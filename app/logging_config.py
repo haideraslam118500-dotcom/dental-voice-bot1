@@ -1,35 +1,39 @@
-from __future__ import annotations
-
-import json
 import logging
-from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+import os
+import json
 
+ROOT = Path(__file__).resolve().parents[1]
+LOG_DIR = ROOT / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+LOG_FILE = LOG_DIR / "app.log"
 
-class JsonFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        payload = {
-            "time": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
-            "level": record.levelname,
-            "name": record.name,
-            "message": record.getMessage(),
-        }
-        if record.exc_info:
-            payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, ensure_ascii=False)
+def setup_logging():
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
 
+    # Avoid duplicate handlers on reload
+    if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        return
 
-def setup_logging(json_logs: bool) -> None:
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    root.handlers.clear()
+    # File handler (rotating)
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    file_fmt = logging.Formatter('%(asctime)s | %(levelname)s | %(name)s | %(message)s')
+    file_handler.setFormatter(file_fmt)
+    logger.addHandler(file_handler)
 
-    handler = logging.StreamHandler()
-    if json_logs:
-        handler.setFormatter(JsonFormatter())
-    else:
-        handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
-
-    root.addHandler(handler)
-
-
-__all__ = ["setup_logging"]
+    # Optional JSON to stdout
+    if os.getenv("DEBUG_LOG_JSON", "false").lower() == "true":
+        class JsonFormatter(logging.Formatter):
+            def format(self, record):
+                payload = {
+                    "timestamp": self.formatTime(record, self.datefmt),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                }
+                return json.dumps(payload)
+        stream = logging.StreamHandler()
+        stream.setFormatter(JsonFormatter())
+        logger.addHandler(stream)
