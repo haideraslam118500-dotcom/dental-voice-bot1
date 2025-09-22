@@ -95,6 +95,23 @@ POSITIVE_RESPONSES = {
     "sounds good",
 }
 
+ANYTIME_PHRASES = {
+    "anytime",
+    "any time",
+    "any time works",
+    "anytime works",
+    "anytime is fine",
+    "any time is fine",
+    "any is fine",
+    "whenever",
+    "whenever works",
+    "whenever is fine",
+    "any time works for me",
+    "anytime works for me",
+    "whenever works for me",
+    "whatever time works",
+}
+
 
 def _get_active_voice() -> str:
     with _voice_lock:
@@ -179,6 +196,7 @@ def _initial_state(call_sid: str, form_data: Mapping[str, Any]) -> Dict[str, Any
         "greeted": False,
         "booking_logged": False,
         "metadata": metadata,
+        "ending": False,
     }
 
 
@@ -283,8 +301,15 @@ def create_goodbye_twiml(
         language=language,
         call_sid=call_sid,
     )
+    response.pause(length="1")
     response.hangup()
     return str(response)
+
+
+def _hangup_only_response() -> Response:
+    response = VoiceResponse()
+    response.hangup()
+    return _twiml_response(str(response))
 
 
 def _remember_agent_line(state: Dict[str, Any], text: str) -> None:
@@ -326,6 +351,7 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
     message = _next_goodbye()
     _remember_agent_line(state, message)
     state["stage"] = "completed"
+    state["ending"] = True
     logger.info("Ending call", extra={"call_sid": state.get("call_sid"), "message": message})
     return _twiml_response(
         create_goodbye_twiml(
@@ -356,11 +382,14 @@ def _booking_date_reprompt() -> str:
 def _format_times(slots: Sequence[str]) -> str:
     if not slots:
         return ""
-    if len(slots) == 1:
-        return slots[0]
-    if len(slots) == 2:
-        return " or ".join(slots)
-    return ", ".join(slots[:-1]) + f", or {slots[-1]}"
+    spoken = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
+    if not spoken:
+        return ""
+    if len(spoken) == 1:
+        return spoken[0]
+    if len(spoken) == 2:
+        return " or ".join(spoken)
+    return ", ".join(spoken[:-1]) + f", or {spoken[-1]}"
 
 
 def _booking_time_prompt(date: str, slots: Sequence[str]) -> str:
@@ -371,28 +400,31 @@ def _booking_time_prompt(date: str, slots: Sequence[str]) -> str:
 
 
 def _booking_time_reprompt(slots: Sequence[str]) -> str:
-    cleaned = [slot for slot in slots if slot]
+    cleaned = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
     if cleaned:
         preview = ", ".join(cleaned[:3])
         return f"Times available are {preview}. Which would you like?"
-    return "What time suits you? You can say ten a m, ten thirty, or three p m."
+    return "What time suits you? You can say nine a m, eleven a m, or two thirty p m."
 
 
 def _booking_name_prompt(time: str) -> str:
-    return f"Okay, {time} noted. And your name please?"
+    return f"Okay, {nlp.hhmm_to_12h(time)} noted. And your name please?"
 
 
 def _booking_confirm_prompt(state: Dict[str, Any]) -> str:
+    spoken_time = (
+        nlp.hhmm_to_12h(state["booking_time"]) if state.get("booking_time") else state.get("booking_time", "")
+    )
     return (
         f"Great, {state['caller_name']}. Shall I book you in for {state['booking_appt_type']} "
-        f"on {state['booking_date']} at {state['booking_time']}?"
+        f"on {state['booking_date']} at {spoken_time}?"
     )
 
 
 def _booking_confirmed_message(state: Dict[str, Any]) -> str:
     msg = random.choice(CONFIRM_TEMPLATES).format(
         date=state["booking_date"],
-        time=state["booking_time"],
+        time=nlp.hhmm_to_12h(state["booking_time"]),
         type=state["booking_appt_type"],
         name=state["caller_name"] or "",
     )
@@ -455,7 +487,7 @@ def _handle_availability_request(state: Dict[str, Any], user_input: str) -> Resp
         nxt = _next_available_slot()
         if nxt:
             message = (
-                f"That day looks full. The next available is {nxt['date']} at {nxt['start_time']}. Would you like that?"
+                f"That day looks full. The next available is {nxt['date']} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?"
             )
         else:
             message = "Sorry, I can’t see any free times right now."
@@ -642,7 +674,7 @@ def _handle_booking_date(state: Dict[str, Any], user_input: str, intent: Optiona
         if nxt:
             state["booking_suggested_slot"] = nxt
             message = (
-                f"Sorry, no free times on that day. The next available is {nxt['date']} at {nxt['start_time']}. Would you like that?"
+                f"Sorry, no free times on that day. The next available is {nxt['date']} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?"
             )
         else:
             message = "Sorry, I can’t see any available times in the schedule right now."
@@ -662,24 +694,39 @@ def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optiona
     if intent == "availability":
         return _handle_availability_request(state, user_input)
 
-    hhmm = nlp.normalize_time(user_input)
+    available_list = list(state.get("booking_available_times") or [])
+    if state.get("booking_date") and not available_list:
+        available_list = _available_slots_for_date(state["booking_date"])
+        state["booking_available_times"] = available_list
+    avail_set = set(available_list)
+
+    if not available_list:
+        state["retries"] += 1
+        return _respond_with_gather(
+            state,
+            "Sorry, I can’t see any free times for that day.",
+            action="/gather-booking",
+        )
+
+    lowered = user_input.lower().strip()
+    if lowered in ANYTIME_PHRASES:
+        hhmm = available_list[0]
+    else:
+        hhmm = nlp.fuzzy_pick_time(user_input, available_list)
+
     if not hhmm:
         state["retries"] += 1
         return _respond_with_gather(
             state,
-            _booking_time_reprompt(state.get("booking_available_times", [])),
+            _booking_time_reprompt(available_list),
             action="/gather-booking",
         )
 
-    avail = set(state.get("booking_available_times") or [])
-    if state.get("booking_date") and not avail:
-        avail = set(_available_slots_for_date(state["booking_date"]))
-        state["booking_available_times"] = list(avail)
-    if avail and hhmm not in avail:
+    if avail_set and hhmm not in avail_set:
         state["retries"] += 1
         return _respond_with_gather(
             state,
-            _booking_time_reprompt(list(avail)),
+            _booking_time_reprompt(available_list),
             action="/gather-booking",
         )
 
@@ -794,6 +841,9 @@ async def voice_webhook(request: Request) -> Response:
     state = _get_state(call_sid, form)
     assert state is not None
 
+    if state.get("ending") or state.get("stage") == "completed":
+        return _hangup_only_response()
+
     speech_result = (form.get("SpeechResult") or "").strip()
     if speech_result:
         transcript_add(call_sid, "Caller", speech_result)
@@ -819,6 +869,9 @@ async def gather_intent_route(request: Request) -> Response:
 
     state = _get_state(call_sid, form)
     assert state is not None
+
+    if state.get("ending") or state.get("stage") == "completed":
+        return _hangup_only_response()
 
     speech_result = (form.get("SpeechResult") or "").strip()
     if not speech_result:
@@ -850,6 +903,9 @@ async def gather_booking_route(request: Request) -> Response:
 
     state = _get_state(call_sid, form)
     assert state is not None
+
+    if state.get("ending") or state.get("stage") == "completed":
+        return _hangup_only_response()
 
     speech_result = (form.get("SpeechResult") or "").strip()
     stage = state.get("stage")
