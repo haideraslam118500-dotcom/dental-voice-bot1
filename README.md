@@ -88,6 +88,14 @@ Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the T
 
 ## Persistence outputs
 
+Transcripts capture both sides of the conversation in real time: each agent prompt that is spoken and every caller utterance is
+stored in memory until Twilio sends `/status` with `CallStatus=completed`, at which point the full transcript is flushed to disk.
+While a call is active you can review the live state at `/_debug/state` and the in-progress transcript via
+`/_debug/transcript?sid=<CallSid>` (local development only).
+
+**Important:** Configure the Twilio phone number's **Status Callback (POST)** to point at `/status` — without it the transcript
+file is never written.
+
 When Twilio sends `/status` with `CallStatus=completed` the app:
 
 1. Writes the transcript to `transcripts/AI Incoming Call <index> <HH-mm> <dd-MM-yy>.txt` using `[Agent]` / `[Caller]` lines.
@@ -122,7 +130,7 @@ pytest
 - **405 Method Not Allowed** – Ensure Twilio webhooks are configured with HTTP POST for both `/voice` and `/status`.
 - **502 / tunnel timeout** – Restart `ngrok http 5173` and update Twilio with the new forwarding URL.
 - **403 signature validation failures** – Set `VERIFY_TWILIO_SIGNATURES=false` locally or provide the correct `TWILIO_AUTH_TOKEN`.
-- **Polly voice missing** – If Polly voices are not enabled on your Twilio account, set `TTS_VOICE=alice` (or another supported voice) in your `.env` file.
+- **Polly voice missing** – The app falls back to `alice` automatically if Polly voices are unavailable; set `TTS_VOICE=alice` (or another supported voice) in your `.env` file to avoid repeated warnings.
 - **No transcripts generated** – Confirm the FastAPI server is reachable from your public ngrok URL and that Twilio is sending the status callback.
 
 ## Troubleshooting & Dev
@@ -135,6 +143,7 @@ pytest
 ### Debug endpoints
 - `GET /_debug/state` — returns the current in-memory call states (local only).
 - `GET /_debug/logs?n=200` — streams the last `n` log lines (`n` defaults to 50).
+- `GET /_debug/transcript?sid=<CallSid>` — shows the in-memory transcript for a specific call (local only).
 
 ### Watchers
 - `python scripts/watch.py` (cross-platform log follower).

@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone
 from itertools import cycle
 from threading import Lock
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
@@ -19,6 +19,9 @@ from app.persistence import (
     append_call_record,
     ensure_storage,
     save_transcript,
+    transcript_add,
+    transcript_init,
+    transcript_pop,
 )
 from app.security import TwilioRequestValidationMiddleware
 from app.twilio_compat import RequestValidator
@@ -32,6 +35,10 @@ ensure_storage()
 
 VOICE = settings.voice
 LANGUAGE = settings.language
+
+_voice_lock = Lock()
+_active_voice = VOICE
+_voice_fallback_notified = False
 
 OPENING_PROMPT = (
     "Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general "
@@ -86,6 +93,48 @@ POSITIVE_RESPONSES = {
     "sounds good",
 }
 
+
+def _get_active_voice() -> str:
+    with _voice_lock:
+        return _active_voice
+
+
+def _set_active_voice(voice: str) -> None:
+    global _active_voice
+    with _voice_lock:
+        _active_voice = voice
+
+
+def _say_with_voice(
+    say_callable: Callable[[str, Optional[str], Optional[str]], Any],
+    message: str,
+    *,
+    preferred_voice: str,
+    language: str,
+    call_sid: Optional[str] = None,
+) -> None:
+    try:
+        say_callable(message, voice=preferred_voice, language=language)
+    except Exception:  # pragma: no cover - depends on Twilio SDK behaviour
+        fallback_voice = settings.fallback_voice or "alice"
+        if fallback_voice == preferred_voice:
+            raise
+        _set_active_voice(fallback_voice)
+        global _voice_fallback_notified
+        if not _voice_fallback_notified:
+            logger.warning(
+                "Preferred voice unavailable; falling back",
+                extra={
+                    "call_sid": call_sid,
+                    "preferred_voice": preferred_voice,
+                    "fallback_voice": fallback_voice,
+                },
+                exc_info=True,
+            )
+            _voice_fallback_notified = True
+        say_callable(message, voice=fallback_voice, language=language)
+
+
 _state_lock = Lock()
 _call_states: Dict[str, Dict[str, Any]] = {}
 CALLS = _call_states
@@ -113,9 +162,10 @@ def _initial_state(call_sid: str, form_data: Mapping[str, Any]) -> Dict[str, Any
         "direction": form_data.get("Direction"),
         "account_sid": form_data.get("AccountSid"),
     }
+    transcript_lines = transcript_init(call_sid)
     return {
         "call_sid": call_sid,
-        "transcript": [],
+        "transcript": transcript_lines,
         "retries": 0,
         "intent": None,
         "caller_name": None,
@@ -179,6 +229,7 @@ def create_gather_twiml(
     language: str,
     hints: Optional[str] = None,
     timeout: int = 5,
+    call_sid: Optional[str] = None,
 ) -> str:
     response = VoiceResponse()
     gather_kwargs = {
@@ -193,13 +244,31 @@ def create_gather_twiml(
     if hints:
         gather_kwargs["hints"] = hints
     gather = response.gather(**gather_kwargs)
-    gather.say(prompt, voice=voice, language=language)
+    _say_with_voice(
+        gather.say,
+        prompt,
+        preferred_voice=voice,
+        language=language,
+        call_sid=call_sid,
+    )
     return str(response)
 
 
-def create_goodbye_twiml(message: str, *, voice: str, language: str) -> str:
+def create_goodbye_twiml(
+    message: str,
+    *,
+    voice: str,
+    language: str,
+    call_sid: Optional[str] = None,
+) -> str:
     response = VoiceResponse()
-    response.say(message, voice=voice, language=language)
+    _say_with_voice(
+        response.say,
+        message,
+        preferred_voice=voice,
+        language=language,
+        call_sid=call_sid,
+    )
     response.hangup()
     return str(response)
 
@@ -207,13 +276,17 @@ def create_goodbye_twiml(message: str, *, voice: str, language: str) -> str:
 def _remember_agent_line(state: Dict[str, Any], text: str) -> None:
     text = (text or "").strip()
     if text:
-        state["transcript"].append(f"[Agent] {text}")
+        call_sid = (state.get("call_sid") or "").strip()
+        if call_sid:
+            transcript_add(call_sid, "Agent", text)
 
 
 def _remember_caller_line(state: Dict[str, Any], text: str) -> None:
     text = (text or "").strip()
     if text:
-        state["transcript"].append(f"[Caller] {text}")
+        call_sid = (state.get("call_sid") or "").strip()
+        if call_sid:
+            transcript_add(call_sid, "Caller", text)
 
 
 def _respond_with_gather(
@@ -224,7 +297,14 @@ def _respond_with_gather(
     hints: Optional[str] = None,
 ) -> Response:
     _remember_agent_line(state, prompt)
-    twiml = create_gather_twiml(prompt, action=action, voice=VOICE, language=LANGUAGE, hints=hints)
+    twiml = create_gather_twiml(
+        prompt,
+        action=action,
+        voice=_get_active_voice(),
+        language=LANGUAGE,
+        hints=hints,
+        call_sid=state.get("call_sid"),
+    )
     return _twiml_response(twiml)
 
 
@@ -233,7 +313,14 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
     _remember_agent_line(state, message)
     state["stage"] = "completed"
     logger.info("Ending call", extra={"call_sid": state.get("call_sid"), "message": message})
-    return _twiml_response(create_goodbye_twiml(message, voice=VOICE, language=LANGUAGE))
+    return _twiml_response(
+        create_goodbye_twiml(
+            message,
+            voice=_get_active_voice(),
+            language=LANGUAGE,
+            call_sid=state.get("call_sid"),
+        )
+    )
 
 
 def _booking_time_prompt(name: Optional[str]) -> str:
@@ -433,7 +520,13 @@ async def health() -> JSONResponse:
 
 def _missing_call_sid_response() -> Response:
     fallback = "Thanks for calling. Goodbye."
-    return _twiml_response(create_goodbye_twiml(fallback, voice=VOICE, language=LANGUAGE))
+    return _twiml_response(
+        create_goodbye_twiml(
+            fallback,
+            voice=_get_active_voice(),
+            language=LANGUAGE,
+        )
+    )
 
 
 @app.post("/voice")
@@ -446,6 +539,10 @@ async def voice_webhook(request: Request) -> Response:
 
     state = _get_state(call_sid, form)
     assert state is not None
+
+    speech_result = (form.get("SpeechResult") or "").strip()
+    if speech_result:
+        transcript_add(call_sid, "Caller", speech_result)
 
     if not state.get("greeted"):
         state["greeted"] = True
@@ -541,7 +638,13 @@ async def status_callback(request: Request) -> JSONResponse:
 
     if call_status == "completed":
         state = state or _initial_state(call_sid, dict(form))
-        transcript_path = save_transcript(call_sid, state.get("transcript", []))
+        transcript_lines = transcript_pop(call_sid)
+        if transcript_lines:
+            transcript_lines = list(transcript_lines)
+        else:
+            transcript_lines = list(state.get("transcript") or [])
+        transcript_path = save_transcript(call_sid, transcript_lines)
+        state["transcript"] = transcript_lines
         state["transcript_file"] = str(transcript_path)
 
         if state.get("intent") == "booking" and state.get("requested_time") and not state.get("booking_logged"):
