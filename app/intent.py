@@ -49,21 +49,7 @@ _AFFIRM_KEYWORDS = {
     "sounds good",
 }
 
-_DIGIT_INTENT = {
-    "1": "hours",
-    "2": "address",
-    "3": "prices",
-    "4": "booking",
-}
-
-
-def parse_intent(speech: Optional[str], digits: Optional[str]) -> Optional[str]:
-    if digits:
-        for digit in digits:
-            intent = _DIGIT_INTENT.get(digit)
-            if intent:
-                return intent
-
+def parse_intent(speech: Optional[str]) -> Optional[str]:
     if not speech:
         return None
 

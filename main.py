@@ -56,25 +56,22 @@ def _twiml_response(twiml: str) -> Response:
 
 
 def _initial_prompt() -> str:
-    greeting = dialogue.pick_greeting()
-    return (
-        f"{greeting} How can I help today? You can ask about our opening hours, address, prices, or book a visit. "
-        "Press 1 for hours, 2 for address, 3 for prices, or 4 to book."
-    )
+    return dialogue.build_menu_prompt()
 
 
 def _continuation_prompt() -> str:
     holder = dialogue.pick_holder()
     return (
-        f"{holder} What else can I help with? You can mention our hours, address, prices, or book a visit."
+        f"{holder} What else can I help with? You can ask about our opening hours, our address, our prices, "
+        "or let me know if you'd like to book an appointment."
     )
 
 
 def _intent_clarifier_prompt() -> str:
     clarifier = dialogue.pick_clarifier()
     return (
-        f"{clarifier} Just mention hours, address, prices, or booking. "
-        "You can press 1 for hours, 2 for address, 3 for prices, or 4 to book."
+        f"{clarifier} You can ask about our opening hours, our address, our prices, or say you'd like to "
+        "book an appointment."
     )
 
 
@@ -119,6 +116,7 @@ def _reset_state(state: CallState, form_data) -> None:
     state.completed = False
     state.transcript_file = None
     state.final_goodbye = None
+    state.has_greeted = False
     state.metadata = {
         "from": form_data.get("From"),
         "to": form_data.get("To"),
@@ -279,13 +277,16 @@ async def voice_webhook(request: Request) -> Response:
         return _goodbye(CallState(call_sid="unknown"))
 
     state = state_store.get_or_create(call_sid)
-    _reset_state(state, form)
+    if not state.has_greeted:
+        _reset_state(state, form)
+        prompt = _initial_prompt()
+        state.add_system_line(prompt)
+        state.has_greeted = True
+        logger.info("Incoming call", extra={"call_sid": call_sid})
+        return _twiml_response(gather_for_intent(prompt, voice, language))
 
-    prompt = _initial_prompt()
-    state.add_system_line(prompt)
-    logger.info("Incoming call", extra={"call_sid": call_sid})
-
-    return _twiml_response(gather_for_intent(prompt, voice, language))
+    stage = state.awaiting if state.awaiting in {"anything_else", "name", "time"} else "intent"
+    return _handle_silence(state, stage)
 
 
 @app.post("/gather-intent")
@@ -297,9 +298,8 @@ async def gather_intent_route(request: Request) -> Response:
         return _goodbye(CallState(call_sid="unknown"))
 
     state = state_store.get_or_create(call_sid)
-    speech_result = form.get("SpeechResult")
-    digits = form.get("Digits")
-    user_input = (speech_result or "").strip() or (digits or "").strip()
+    speech_result = (form.get("SpeechResult") or "").strip()
+    user_input = speech_result
 
     if not user_input:
         stage = state.awaiting if state.awaiting in {"anything_else", "name", "time"} else "intent"
@@ -308,7 +308,7 @@ async def gather_intent_route(request: Request) -> Response:
     state.add_caller_line(user_input)
     state.reset_silence()
 
-    intent = parse_intent(speech_result, digits)
+    intent = parse_intent(speech_result)
     logger.info(
         "Parsed caller intent",
         extra={"call_sid": call_sid, "intent": intent, "stage": state.awaiting},
@@ -330,9 +330,9 @@ async def gather_booking_route(request: Request) -> Response:
         return _goodbye(CallState(call_sid="unknown"))
 
     state = state_store.get_or_create(call_sid)
-    speech_result = form.get("SpeechResult")
-    digits = form.get("Digits")
-    user_input = (speech_result or "").strip() or (digits or "").strip()
+    speech_result = (form.get("SpeechResult") or "").strip()
+    digits = (form.get("Digits") or "").strip()
+    user_input = speech_result or digits
 
     if not user_input:
         stage = state.awaiting if state.awaiting in {"name", "time"} else "intent"
@@ -341,7 +341,7 @@ async def gather_booking_route(request: Request) -> Response:
     state.add_caller_line(user_input)
     state.reset_silence()
 
-    intent = parse_intent(speech_result, digits)
+    intent = parse_intent(speech_result)
 
     if state.awaiting == "name":
         if intent == "goodbye":

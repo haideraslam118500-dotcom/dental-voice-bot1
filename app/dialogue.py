@@ -4,21 +4,12 @@ import random
 from typing import Optional
 
 
-GREETINGS = [
-    "Hello, you're through to Market Street Dental.",
-    "Hi there, thanks for calling Market Street Dental.",
-    "Good day, Market Street Dental reception speaking.",
-    "Hello, Market Street Dental on the line.",
-    "Hi, you've reached the Market Street Dental team.",
-    "Hello there, Market Street Dental reception here.",
-    "Morning, Market Street Dental here.",
-    "Afternoon, Market Street Dental, how can I help?",
-    "Hiya, Market Street Dental practice speaking.",
-    "Thanks for ringing Market Street Dental.",
-    "Hello, Market Street Dental, what can I do for you?",
-    "Hi, Market Street Dental, lovely to hear from you.",
-    "Hello, Market Street Dental, how may I help today?",
-]
+MENU_GREETING = (
+    "Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with "
+    "general information and booking appointments. Please note, I’m not a medical professional. "
+    "You can ask about our opening hours, our address, our prices, or say you’d like to book an "
+    "appointment."
+)
 
 HOLDERS = [
     "Okay, that's fine.",
@@ -91,8 +82,8 @@ PRICES_LINE = (
 ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
 
 
-def pick_greeting() -> str:
-    return random.choice(GREETINGS)
+def build_menu_prompt() -> str:
+    return MENU_GREETING
 
 
 def pick_holder() -> str:
