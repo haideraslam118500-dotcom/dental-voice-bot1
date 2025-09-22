@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import logging
 import random
 from typing import Optional
+
+from app import schedule
+
+
+log = logging.getLogger("app.dialogue")
 
 
 GREETINGS = [
@@ -75,6 +81,18 @@ GOODBYES = [
     "Have a cracking day, goodbye.",
     "Pleasure speaking, take care.",
     "Lovely, talk soon, bye.",
+]
+
+CLOSINGS = [
+    "Okay, thanks for calling Oak Dental. Goodbye.",
+    "Alright, appreciate the call. Goodbye.",
+    "Thanks for calling. Take care, goodbye.",
+]
+
+CONFIRM_TEMPLATES = [
+    "Perfect, I’ll book you for {date} at {time} for a {type}, under {name}.",
+    "Alright, {name}, you’re set for {type} on {date} at {time}.",
+    "Got it — {type} appointment for {name}, {date} {time}.",
 ]
 
 HOURS_LINE = (
@@ -168,4 +186,60 @@ def compose_booking_confirmation(name: Optional[str], requested_time: str) -> st
     confirmation = random.choice(CONFIRMATIONS).format(slot=requested_time)
     name_bit = f"Thanks {name}. " if name else "Thanks. "
     return f"{name_bit}{holder} {confirmation}"
+
+
+def booking_flow(state, transcript: str):
+    log.info(f"Booking flow stage={state.get('stage')} input={transcript}")
+
+    if state.get("stage") is None:
+        state["stage"] = "ask_type"
+        return "Sure, what type of appointment would you like? For example check-up, hygiene, or whitening?"
+
+    elif state["stage"] == "ask_type":
+        chosen = transcript.strip().capitalize()
+        if not any(chosen.lower() == t.lower() for t in schedule.APPT_TYPES):
+            return f"Sorry, I didn’t catch that type. We do {', '.join(schedule.APPT_TYPES)}. Which would you like?"
+        state["appt_type"] = chosen
+        state["stage"] = "ask_date"
+        return f"Great, a {state['appt_type']} — what day works best for you?"
+
+    elif state["stage"] == "ask_date":
+        state["date"] = transcript.strip()
+        avail = schedule.list_available(date=state["date"])
+        if not avail:
+            next_avail = schedule.find_next_available(state["date"])
+            if not next_avail:
+                return "Sorry, I can’t see any available times in the schedule right now."
+            return f"Sorry, no free times on {state['date']}. The next available is {next_avail['date']} at {next_avail['start_time']}. Would you like that?"
+        options = ", ".join(f"{s['start_time']}" for s in avail)
+        state["stage"] = "ask_time"
+        return f"On {state['date']}, we have {options}. Which time works for you?"
+
+    elif state["stage"] == "ask_time":
+        state["time"] = transcript.strip()
+        state["stage"] = "ask_name"
+        return f"Okay, {state['time']} noted. And your name please?"
+
+    elif state["stage"] == "ask_name":
+        state["name"] = transcript.strip()
+        state["stage"] = "confirm"
+        return f"Great, {state['name']}. Shall I book you in for {state['appt_type']} on {state['date']} at {state['time']}?"
+
+    elif state["stage"] == "confirm":
+        if transcript.lower() in ("yes","yeah","yep","ok","okay","please","sure"):
+            ok = schedule.reserve_slot(state["date"], state["time"], state["name"], state["appt_type"])
+            if ok:
+                msg = random.choice(CONFIRM_TEMPLATES).format(
+                    date=state["date"], time=state["time"], type=state["appt_type"], name=state["name"]
+                )
+                state.clear()
+                return msg + " Anything else I can help with?"
+            else:
+                state.clear()
+                return "Sorry, that slot was just taken. Would you like to pick another?"
+        else:
+            state.clear()
+            return "No problem, I won’t reserve it. Anything else I can help with?"
+
+    return "I didn’t quite catch that."
 
