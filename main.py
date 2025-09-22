@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+from collections import deque
 from datetime import datetime, timezone
 from itertools import cycle
 from threading import Lock
@@ -42,6 +43,9 @@ LANGUAGE = settings.language
 _voice_lock = Lock()
 _active_voice = VOICE
 _voice_fallback_notified = False
+
+_greeting_lock = Lock()
+_greeting_queue: deque[str] = deque()
 
 MENU_STATEMENT = "I can help with our hours, address, prices, or book you in."
 CLARIFY_PROMPT = "Would you like our hours, address, prices, or to book an appointment?"
@@ -241,11 +245,22 @@ def _twiml_response(twiml: str) -> Response:
     return Response(content=twiml, media_type="application/xml")
 
 
-def _build_opening_prompt() -> str:
-    greeting = random.choice(GREETINGS)
+def _next_opening_line() -> str:
+    with _greeting_lock:
+        if not _greeting_queue:
+            options = list(GREETINGS)
+            random.shuffle(options)
+            _greeting_queue.extend(options)
+        return _greeting_queue.popleft()
+
+
+def _build_opening_prompt(state: Dict[str, Any]) -> str:
+    greeting = state.get("opening_line") or _next_opening_line()
+    state.setdefault("opening_line", greeting)
     parts = [greeting]
-    if DISCLAIMER_LINE:
+    if not state.get("disclaimer_said") and DISCLAIMER_LINE:
         parts.append(DISCLAIMER_LINE)
+        state["disclaimer_said"] = True
     lower = greeting.lower()
     if not any(keyword in lower for keyword in ("hours", "prices", "booking")):
         parts.append(MENU_STATEMENT)
@@ -352,7 +367,7 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
     _remember_agent_line(state, message)
     state["stage"] = "completed"
     state["ending"] = True
-    logger.info("Ending call", extra={"call_sid": state.get("call_sid"), "message": message})
+    logger.info("Ending call", extra={"call_sid": state.get("call_sid"), "text": message})
     return _twiml_response(
         create_goodbye_twiml(
             message,
@@ -854,7 +869,7 @@ async def voice_webhook(request: Request) -> Response:
         state["silence_count"] = 0
         state["retries"] = 0
         logger.info("Incoming call", extra={"call_sid": call_sid})
-        return _respond_with_gather(state, _build_opening_prompt())
+        return _respond_with_gather(state, _build_opening_prompt(state))
 
     return _respond_with_gather(state, CLARIFY_PROMPT)
 

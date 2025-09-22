@@ -2,11 +2,42 @@ from __future__ import annotations
 
 import calendar
 import re
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
+from datetime import date as _date
 
 
-def today_date() -> date:
-    return datetime.now().date()
+def today_date() -> _date:
+    """Helper used by tests; returns the current local date."""
+    return _date.today()
+
+
+def _ordinal(n: int) -> str:
+    """Turn 1 into 1st, 2 into 2nd, etc."""
+    if 10 <= n % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def human_day_phrase(yyyy_mm_dd: str) -> str:
+    """Convert YYYY-MM-DD strings into natural, speech-friendly phrases."""
+    try:
+        target = datetime.strptime(yyyy_mm_dd, "%Y-%m-%d").date()
+    except Exception:
+        return yyyy_mm_dd
+
+    today = today_date()
+    if target == today:
+        return "today"
+    if target == today + timedelta(days=1):
+        return "tomorrow"
+
+    delta = target - today
+    if 0 < delta.days <= 7:
+        return f"this {target.strftime('%A')}"
+
+    return f"{target.strftime('%A')} the {_ordinal(target.day)}"
 
 
 WEEKDAYS = {name.lower(): i for i, name in enumerate(calendar.day_name)}
