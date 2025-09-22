@@ -18,3 +18,8 @@ def test_affirm_detection():
 
 def test_unknown_returns_none():
     assert parse_intent("I want to talk about something else") is None
+
+
+def test_availability_detection():
+    assert parse_intent("What do you have?") == "availability"
+    assert parse_intent("Any slots available tomorrow?") == "availability"

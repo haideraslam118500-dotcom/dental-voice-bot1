@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import logging
+import random
 import re
 from datetime import datetime, timezone
 from itertools import cycle
 from threading import Lock
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from twilio.twiml.voice_response import VoiceResponse
 
 from app.config import get_settings
+from app.dialogue import AVAILABILITY_OPTIONS, CONFIRMATIONS, DISCLAIMER_LINE, GREETINGS
 from app.intent import parse_intent
 from app.logging_config import setup_logging
 from app.persistence import (
@@ -40,16 +42,13 @@ _voice_lock = Lock()
 _active_voice = VOICE
 _voice_fallback_notified = False
 
-OPENING_PROMPT = (
-    "Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general "
-    "information and booking appointments. Please note, I’m not a medical professional. How can I help "
-    "you today? You can ask about our opening hours, our address, our prices, or say you’d like to book an appointment."
-)
-CLARIFY_PROMPT = "Do you need our opening hours, address, prices, or would you like to book?"
+MENU_STATEMENT = "I can help with our hours, address, prices, or book you in."
+CLARIFY_PROMPT = "Would you like our hours, address, prices, or to book an appointment?"
 ANYTHING_ELSE_PROMPT = "Is there anything else I can help with?"
-BOOKING_NAME_PROMPT = "Sure, let's get you booked in. Could I take your first name?"
-BOOKING_NAME_REPROMPT = "Could I just take the first name for the appointment?"
-BOOKING_TIME_PROMPT_TEMPLATE = "Thanks {name}. What day and time suits you best?"
+BOOKING_TIME_PROMPT = "Sure, let's find you a time. What day and time works for you?"
+BOOKING_NAME_PROMPT = "What's the name for the appointment?"
+BOOKING_NAME_REPROMPT = "Could I take the name for the appointment?"
+BOOKING_TIME_PROMPT_TEMPLATE = "Thanks {name}. What day and time works for you?"
 BOOKING_TIME_REPROMPT = "What day and time would you like to come in?"
 BOOKING_CONFIRM_REPROMPT = "Should I pencil that appointment in for you?"
 BOOKING_DECLINED_PROMPT = "No problem, we won't lock anything in just yet. Is there anything else I can help with?"
@@ -221,6 +220,18 @@ def _twiml_response(twiml: str) -> Response:
     return Response(content=twiml, media_type="application/xml")
 
 
+def _build_opening_prompt() -> str:
+    greeting = random.choice(GREETINGS)
+    parts = [greeting]
+    if DISCLAIMER_LINE:
+        parts.append(DISCLAIMER_LINE)
+    lower = greeting.lower()
+    if not any(keyword in lower for keyword in ("hours", "prices", "booking")):
+        parts.append(MENU_STATEMENT)
+        parts.append(CLARIFY_PROMPT)
+    return " ".join(part for part in parts if part)
+
+
 def create_gather_twiml(
     prompt: str,
     *,
@@ -326,14 +337,21 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
 def _booking_time_prompt(name: Optional[str]) -> str:
     if name:
         return BOOKING_TIME_PROMPT_TEMPLATE.format(name=name)
-    return "Thanks. What day and time suits you best?"
+    return BOOKING_TIME_PROMPT
+
+
+def _booking_name_prompt_text(requested_time: Optional[str]) -> str:
+    if requested_time:
+        return f"Great, I can hold {requested_time}. {BOOKING_NAME_PROMPT}"
+    return BOOKING_NAME_PROMPT
 
 
 def _booking_confirmation_prompt(name: Optional[str], requested_time: Optional[str]) -> str:
     when = requested_time or "that time"
+    confirmation = random.choice(CONFIRMATIONS).format(slot=when)
     if name:
-        return f"Thanks {name}. I'll note {when}. Does that work for you?"
-    return f"Thanks. I'll note {when}. Does that work for you?"
+        return f"Thanks {name}. {confirmation}"
+    return f"Thanks. {confirmation}"
 
 
 def _booking_confirmed_message(name: Optional[str], requested_time: Optional[str]) -> str:
@@ -341,6 +359,43 @@ def _booking_confirmed_message(name: Optional[str], requested_time: Optional[str
     if name:
         return f"Brilliant, {name}. I've noted {when} and the team will confirm shortly. {ANYTHING_ELSE_PROMPT}"
     return f"Brilliant. I've noted {when} and the team will confirm shortly. {ANYTHING_ELSE_PROMPT}"
+
+
+def _format_availability_options(options: Sequence[str]) -> str:
+    cleaned = [option.strip() for option in options if option and option.strip()]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return " or ".join(cleaned)
+    return ", ".join(cleaned[:-1]) + f", or {cleaned[-1]}"
+
+
+def _availability_prompt() -> str:
+    slots = _format_availability_options(AVAILABILITY_OPTIONS)
+    if not slots:
+        return "We can be flexible with appointments. Which time works for you?"
+    return f"We have {slots}. Which of those times works for you?"
+
+
+def _offer_availability(state: Dict[str, Any], *, clear_name: bool = False) -> Response:
+    if clear_name:
+        state["caller_name"] = None
+    state["intent"] = "booking"
+    state["stage"] = "booking_time"
+    state["silence_count"] = 0
+    state["retries"] = 0
+    state["requested_time"] = None
+    logger.info(
+        "Offering availability options",
+        extra={"call_sid": state.get("call_sid")},
+    )
+    return _respond_with_gather(
+        state,
+        _availability_prompt(),
+        action="/gather-booking",
+    )
 
 
 def _extract_first_name(text: str) -> Optional[str]:
@@ -389,11 +444,11 @@ def _start_booking(state: Dict[str, Any]) -> Response:
     state["intent"] = "booking"
     state["caller_name"] = None
     state["requested_time"] = None
-    state["stage"] = "booking_name"
+    state["stage"] = "booking_time"
     state["silence_count"] = 0
     state["retries"] = 0
     logger.info("Booking flow started", extra={"call_sid": state.get("call_sid")})
-    return _respond_with_gather(state, BOOKING_NAME_PROMPT, action="/gather-booking")
+    return _respond_with_gather(state, _booking_time_prompt(None), action="/gather-booking")
 
 
 def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_input: str) -> Response:
@@ -407,6 +462,8 @@ def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_in
         state["retries"] = 0
         logger.info("Providing information", extra={"call_sid": state.get("call_sid"), "intent": intent})
         return _respond_with_gather(state, message)
+    if intent == "availability":
+        return _offer_availability(state, clear_name=True)
     if intent == "booking":
         return _start_booking(state)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
@@ -420,6 +477,8 @@ def _handle_follow_up(state: Dict[str, Any], intent: Optional[str], user_input: 
     lowered = user_input.lower().strip()
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
+    if intent == "availability":
+        return _offer_availability(state, clear_name=True)
     if intent in INFO_LINES or intent == "booking":
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input)
@@ -436,18 +495,24 @@ def _handle_booking_name(state: Dict[str, Any], user_input: str, intent: Optiona
     if intent in INFO_LINES:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input)
+    if intent == "availability":
+        return _offer_availability(state)
     name = _extract_first_name(user_input)
     if not name:
         state["retries"] += 1
         return _respond_with_gather(state, BOOKING_NAME_REPROMPT, action="/gather-booking")
     state["caller_name"] = name
-    state["stage"] = "booking_time"
+    state["stage"] = "booking_confirm"
     state["silence_count"] = 0
     logger.info(
         "Captured caller name",
         extra={"call_sid": state.get("call_sid"), "caller_name": name},
     )
-    return _respond_with_gather(state, _booking_time_prompt(name), action="/gather-booking")
+    return _respond_with_gather(
+        state,
+        _booking_confirmation_prompt(state.get("caller_name"), state.get("requested_time")),
+        action="/gather-booking",
+    )
 
 
 def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
@@ -456,16 +521,25 @@ def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optiona
     if intent in INFO_LINES:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input)
+    if intent == "availability":
+        return _offer_availability(state)
     state["requested_time"] = user_input
-    state["stage"] = "booking_confirm"
     state["silence_count"] = 0
     logger.info(
         "Captured requested time",
         extra={"call_sid": state.get("call_sid"), "requested_time": user_input},
     )
+    if state.get("caller_name"):
+        state["stage"] = "booking_confirm"
+        return _respond_with_gather(
+            state,
+            _booking_confirmation_prompt(state.get("caller_name"), state.get("requested_time")),
+            action="/gather-booking",
+        )
+    state["stage"] = "booking_name"
     return _respond_with_gather(
         state,
-        _booking_confirmation_prompt(state.get("caller_name"), state.get("requested_time")),
+        _booking_name_prompt_text(state.get("requested_time")),
         action="/gather-booking",
     )
 
@@ -478,6 +552,8 @@ def _handle_booking_confirmation(state: Dict[str, Any], user_input: str, intent:
     if intent in INFO_LINES:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input)
+    if intent == "availability":
+        return _offer_availability(state)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
         if not state.get("booking_logged") and state.get("requested_time"):
             append_booking(
@@ -550,7 +626,7 @@ async def voice_webhook(request: Request) -> Response:
         state["silence_count"] = 0
         state["retries"] = 0
         logger.info("Incoming call", extra={"call_sid": call_sid})
-        return _respond_with_gather(state, OPENING_PROMPT)
+        return _respond_with_gather(state, _build_opening_prompt())
 
     return _respond_with_gather(state, CLARIFY_PROMPT)
 

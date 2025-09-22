@@ -4,12 +4,13 @@ import random
 from typing import Optional
 
 
-MENU_GREETING = (
-    "Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with "
-    "general information and booking appointments. Please note, I’m not a medical professional. "
-    "You can ask about our opening hours, our address, our prices, or say you’d like to book an "
-    "appointment."
-)
+GREETINGS = [
+    "Hi, thanks for calling Oak Dental. How can I help today?",
+    "Hello, Oak Dental here — what can I do for you?",
+    "Oak Dental, good to hear from you. Do you need our hours, prices, or a booking?",
+]
+
+DISCLAIMER_LINE = "Just so you know, I’m your AI receptionist, not a medical professional."
 
 SILENCE_REPROMPT = (
     "Hello, I’m still on the line. Let me know if you’d like our opening hours, our address, our "
@@ -86,9 +87,25 @@ PRICES_LINE = (
 
 ANYTHING_ELSE_PROMPT = "Is there anything else I can help you with?"
 
+CONFIRMATIONS = [
+    "Alright, I’ve got {slot}. Shall I go ahead and reserve it?",
+    "Okay, booking for {slot}. Does that sound good?",
+    "Got it — {slot}. Want me to lock that in?",
+]
+
+AVAILABILITY_OPTIONS = [
+    "Tomorrow at 10am",
+    "Tomorrow at 3pm",
+    "Friday at 11am",
+]
+
 
 def build_menu_prompt() -> str:
-    return MENU_GREETING
+    return random.choice(GREETINGS)
+
+
+def compose_disclaimer() -> str:
+    return DISCLAIMER_LINE
 
 
 def compose_initial_reprompt() -> str:
@@ -136,21 +153,19 @@ def compose_anything_else_prompt() -> str:
 
 def compose_booking_name_prompt() -> str:
     holder = pick_holder()
-    return f"{holder} To get you booked in, could I take the name for the appointment?"
+    return f"{holder} Who should I put the booking under?"
 
 
 def compose_booking_time_prompt(name: Optional[str]) -> str:
     holder = pick_holder()
     if name:
-        return f"Thanks {name}. {holder} What day and time suits you?"
-    return f"Thanks. {holder} What day and time suits you?"
+        return f"Thanks {name}. {holder} What day and time works for you?"
+    return f"{holder} What day and time works best for you?"
 
 
 def compose_booking_confirmation(name: Optional[str], requested_time: str) -> str:
     holder = pick_holder()
+    confirmation = random.choice(CONFIRMATIONS).format(slot=requested_time)
     name_bit = f"Thanks {name}. " if name else "Thanks. "
-    return (
-        f"{name_bit}{holder} I'll pencil in {requested_time}. We'll give you a ring to confirm. "
-        f"{ANYTHING_ELSE_PROMPT}"
-    )
+    return f"{name_bit}{holder} {confirmation}"
 

@@ -62,6 +62,9 @@ def parse_intent(speech: Optional[str]) -> Optional[str]:
     def _contains(keyword: str) -> bool:
         return keyword in text if " " in keyword else keyword in words
 
+    if "what do you have" in text or "available" in words or "slots" in words:
+        return "availability"
+
     for keyword in _GOODBYE_KEYWORDS:
         if _contains(keyword):
             return "goodbye"

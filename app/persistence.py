@@ -76,6 +76,15 @@ def transcript_add(call_sid: str, role: str, text: str) -> None:
     entry = f"[{clean_role}] {cleaned}"
     with _TRANSCRIPTS_LOCK:
         lines = _TRANSCRIPTS.setdefault(call_sid, [])
+        if clean_role == "Agent" and lines:
+            last_entry = lines[-1]
+            if "]" in last_entry:
+                _, last_text = last_entry.split("]", 1)
+                last_text = last_text.strip()
+            else:
+                last_text = last_entry.strip()
+            if last_text.lower() == cleaned.lower():
+                return
         lines.append(entry)
 
 
