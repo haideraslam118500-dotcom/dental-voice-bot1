@@ -124,3 +124,20 @@ pytest
 - **403 signature validation failures** – Set `VERIFY_TWILIO_SIGNATURES=false` locally or provide the correct `TWILIO_AUTH_TOKEN`.
 - **Polly voice missing** – If Polly voices are not enabled on your Twilio account, set `TTS_VOICE=alice` (or another supported voice) in your `.env` file.
 - **No transcripts generated** – Confirm the FastAPI server is reachable from your public ngrok URL and that Twilio is sending the status callback.
+
+## Troubleshooting & Dev
+
+### Project folders
+- `transcripts/` — per-call `.txt` transcripts written after each call.
+- `data/` — generated `bookings.csv` and `calls.jsonl` summaries.
+- `logs/` — rotating `app.log` output from the FastAPI app.
+
+### Debug endpoints
+- `GET /_debug/state` — returns the current in-memory call states (local only).
+- `GET /_debug/logs?n=200` — streams the last `n` log lines (`n` defaults to 50).
+
+### Watchers
+- `python scripts/watch.py` (cross-platform log follower).
+- `powershell -ExecutionPolicy Bypass -File .\scripts\watch.ps1 -Lines 200` (Windows tail).
+
+> Debug endpoints are for local development only—do not expose them in production.

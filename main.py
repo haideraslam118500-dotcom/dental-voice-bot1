@@ -23,10 +23,11 @@ from app.persistence import (
 from app.security import TwilioRequestValidationMiddleware
 from app.twilio_compat import RequestValidator
 
+setup_logging()
+
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
-setup_logging(settings.debug_log_json)
 ensure_storage()
 
 VOICE = settings.voice
@@ -85,7 +86,15 @@ POSITIVE_RESPONSES = {
     "sounds good",
 }
 
+_state_lock = Lock()
+_call_states: Dict[str, Dict[str, Any]] = {}
+CALLS = _call_states
+
 app = FastAPI()
+
+from app.debug import router as debug_router
+
+app.include_router(debug_router)
 
 validator = RequestValidator(settings.twilio_auth_token) if settings.twilio_auth_token else None
 protected_paths = ("/voice", "/gather-intent", "/gather-booking", "/status")
@@ -95,9 +104,6 @@ app.add_middleware(
     enabled=settings.verify_twilio_signatures,
     protected_paths=protected_paths,
 )
-
-_state_lock = Lock()
-_call_states: Dict[str, Dict[str, Any]] = {}
 
 
 def _initial_state(call_sid: str, form_data: Mapping[str, Any]) -> Dict[str, Any]:
