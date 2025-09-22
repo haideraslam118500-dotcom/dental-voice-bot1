@@ -222,3 +222,7 @@ marimo/_lsp/
 __marimo__/
 
 data/calls.sqlite
+
+# Keep schedule files
+!data/schedule.csv
+!data/schedule.xlsx
