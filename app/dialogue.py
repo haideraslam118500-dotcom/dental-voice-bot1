@@ -19,6 +19,9 @@ GREETINGS = [
     "Hi there, Oak Dental — what do you need today?",
     "Oak Dental here. How can I help you?",
     "Thanks for calling Oak Dental. What can I do for you?",
+    "Hiya, you’ve reached Oak Dental. How can I help?",
+    "Good afternoon, Oak Dental speaking. What can I do for you today?",
+    "Hello there, Oak Dental. Are you calling to book, or for info?",
 ]
 
 DISCLAIMER_LINE = "Just so you know, I’m your AI receptionist, not a medical professional."
@@ -48,6 +51,9 @@ HOLDERS = [
     "Great, thanks.",
     "Lovely, thanks.",
     "No worries.",
+    "Let me check that.",
+    "Bear with me.",
+    "Thanks, just a sec.",
 ]
 
 CLARIFIERS = [
@@ -62,6 +68,12 @@ CLARIFIERS = [
 ]
 
 THINKING_FILLERS = [
+    "Okay.",
+    "Sure.",
+    "Right.",
+    "No problem.",
+    "All good.",
+    "One moment.",
     "Okay, one moment while I check.",
     "Alright, let me have a quick look.",
     "No worries, give me a second.",
