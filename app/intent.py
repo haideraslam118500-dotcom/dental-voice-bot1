@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional
 
+from app.nlp import infer_service
+
 
 def _normalize(text: str) -> str:
     text = (text or "").replace("’", "'")
@@ -128,10 +130,10 @@ BOOKING_KEYWORDS = {
     "apointment",
     "appoinment",
     "schedule",
+    "make booking",
+    "slot",
+    "slots",
     "reserve",
-    "checkup",
-    "check-up",
-    "see the dentist",
     "visit",
     "buk",
     "buking",
@@ -149,6 +151,8 @@ GOODBYE_KEYWORDS = {
     "that's it",
     "thats it",
     "that is it",
+    "that s all",
+    "that s it",
     "nothing else",
     "no more",
     "finish",
@@ -179,20 +183,40 @@ def classify(speech: Optional[str]) -> Optional[str]:
     if not text:
         return None
 
-    if _any_fuzzy(text, BOOKING_KEYWORDS, max_dist=2):
-        return "booking"
-    if _any_fuzzy(text, HOURS_KEYWORDS, max_dist=1):
-        return "hours"
-    if _any_fuzzy(text, AVAILABILITY_KEYWORDS, max_dist=2):
-        return "availability"
-    if _any_fuzzy(text, ADDRESS_KEYWORDS, max_dist=2):
-        return "address"
-    if _any_fuzzy(text, PRICE_KEYWORDS, max_dist=2):
-        return "prices"
-    if _any_fuzzy(text, GOODBYE_KEYWORDS, max_dist=2):
+    goodbye_intent = _any_fuzzy(text, GOODBYE_KEYWORDS, max_dist=1)
+    if goodbye_intent:
         return "goodbye"
-    if _any_fuzzy(text, AFFIRM_KEYWORDS, max_dist=1):
+
+    price_intent = _any_fuzzy(text, PRICE_KEYWORDS, max_dist=1)
+    booking_intent = _any_fuzzy(text, BOOKING_KEYWORDS, max_dist=1)
+    availability_intent = _any_fuzzy(text, AVAILABILITY_KEYWORDS, max_dist=2)
+    address_intent = _any_fuzzy(text, ADDRESS_KEYWORDS, max_dist=2)
+    hours_intent = _any_fuzzy(text, HOURS_KEYWORDS, max_dist=1)
+    affirm_intent = _any_fuzzy(text, AFFIRM_KEYWORDS, max_dist=1)
+    service = infer_service(speech)
+    explicit_booking = any(
+        keyword in text
+        for keyword in ("book", "booking", "appointment", "schedule", "reserve", "make booking")
+    )
+
+    if price_intent and not booking_intent:
+        return "prices"
+    if booking_intent and not availability_intent:
+        return "booking"
+    if booking_intent and availability_intent and (explicit_booking or service):
+        return "booking"
+    if address_intent:
+        return "address"
+    if availability_intent:
+        return "availability"
+    if hours_intent:
+        return "hours"
+    if price_intent:
+        return "prices"
+    if affirm_intent:
         return "affirm"
+    if service:
+        return "booking"
     return None
 
 
@@ -219,6 +243,13 @@ _APPT_KEYWORDS = {
     "tooth fill": "Filling",
     "emergency": "Emergency",
     "urgent": "Emergency",
+    "extraction": "Extraction",
+    "extract": "Extraction",
+    "tooth extraction": "Extraction",
+    "tooth removal": "Extraction",
+    "pull a tooth": "Extraction",
+    "pull my tooth": "Extraction",
+    "remove a tooth": "Extraction",
 }
 
 
@@ -226,6 +257,18 @@ def extract_appt_type(text: str) -> Optional[str]:
     lowered = _normalize(text)
     if not lowered:
         return None
+
+    service = infer_service(text)
+    if service:
+        mapping = {
+            "checkup": "Check-up",
+            "hygiene": "Hygiene",
+            "whitening": "Whitening",
+            "extraction": "Extraction",
+        }
+        mapped = mapping.get(service)
+        if mapped:
+            return mapped
 
     tokens = lowered.split()
     for raw, canonical in _APPT_KEYWORDS.items():

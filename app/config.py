@@ -32,6 +32,7 @@ class PracticeConfig:
     hours: str
     address: str
     prices: str
+    services: dict[str, str]
 
 
 def _load_practice_config() -> PracticeConfig:
@@ -44,6 +45,12 @@ def _load_practice_config() -> PracticeConfig:
         ),
         "address": "We’re at 12 High Street, Oakford, OX1 2AB. Entrance next to the pharmacy.",
         "prices": "A routine check-up is forty five pounds. Hygiene is sixty five. Whitening starts from two hundred and fifty.",
+        "services": {
+            "checkup": "Check-up is £45",
+            "hygiene": "Hygiene is £65",
+            "whitening": "Whitening starts from £250",
+            "extraction": "Tooth extraction is £120",
+        },
     }
 
     if PRACTICE_CONFIG_PATH.exists():
@@ -66,6 +73,7 @@ def _load_practice_config() -> PracticeConfig:
         hours=str(defaults.get("hours", "")),
         address=str(defaults.get("address", "")),
         prices=str(defaults.get("prices", "")),
+        services=dict(defaults.get("services", {}) or {}),
     )
 
 

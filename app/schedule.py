@@ -9,7 +9,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 SCHEDULE_FILE = DATA_DIR / "schedule.csv"
 BOOKINGS_FILE = DATA_DIR / "bookings.csv"
 
-APPT_TYPES = ["Check-up", "Hygiene", "Whitening", "Filling", "Emergency"]
+APPT_TYPES = ["Check-up", "Hygiene", "Whitening", "Extraction", "Filling", "Emergency"]
 
 
 def load_schedule() -> pd.DataFrame:
