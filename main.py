@@ -20,6 +20,8 @@ from app.dialogue import (
     DISCLAIMER_LINE,
     GREETINGS,
     THINKING_FILLERS,
+    describe_day,
+    format_slot_time,
     pick_clarifier,
     pick_holder,
 )
@@ -67,17 +69,24 @@ BOOKING_DECLINED_PROMPT = (
     "No problem, we won't lock anything in just yet. Is there anything else I can help you with?"
 )
 
+SOFT_REPROMPTS = [
+    "Could you say that again?",
+    "Pardon — one more time?",
+    "Sorry, repeat that for me?",
+]
+
 INFO_LINES = {
     "hours": settings.practice.hours,
     "address": settings.practice.address,
     "prices": settings.practice.prices,
 }
 
+SERVICE_INFO = {k.lower(): v for k, v in (settings.practice.services or {}).items()}
+
 GOODBYES = [
-    "Okay, thanks for calling — have a lovely day. Goodbye.",
-    "Alright, appreciate the call. Take care, goodbye.",
-    "Thanks for calling. Have a great day. Goodbye.",
-    "Cheers for calling. Bye for now.",
+    "Okay, thanks for calling. Have a lovely day. Goodbye.",
+    "Alright, appreciate the call. Take care — goodbye.",
+    "Thanks for calling Oak Dental. Bye for now.",
 ]
 _goodbye_cycle = cycle(GOODBYES)
 
@@ -383,6 +392,15 @@ def _with_ack(text: str, chance: float = 0.7) -> str:
     return f"{holder} {text}"
 
 
+def _clarifier_prompt(confidence: Optional[float]) -> str:
+    low_confidence = confidence is not None and confidence < 0.6
+    if low_confidence:
+        clarifier = pick_clarifier() or CLARIFY_PROMPT
+        return _with_ack(clarifier, 0.7)
+    prompt = random.choice(SOFT_REPROMPTS)
+    return _with_ack(prompt, 0.6)
+
+
 def _respond_with_gather(
     state: Dict[str, Any],
     prompt: PromptPayload,
@@ -423,14 +441,14 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
 
 def _booking_type_prompt() -> str:
     return _with_ack(
-        "What type of appointment would you like? For example check-up, hygiene, or whitening?",
+        "What type of appointment would you like? For example check-up, hygiene, whitening, or extraction?",
         0.85,
     )
 
 
 def _booking_type_reprompt() -> str:
     return _with_ack(
-        "We can do check-up, hygiene, whitening, filling, or emergency. Which would you like?",
+        "We can do check-up, hygiene, whitening, extraction, filling, or emergency. Which would you like?",
         0.85,
     )
 
@@ -449,7 +467,11 @@ def _booking_date_reprompt() -> str:
 def _format_times(slots: Sequence[str]) -> str:
     if not slots:
         return ""
-    spoken = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
+    spoken = []
+    for slot in slots:
+        if not slot:
+            continue
+        spoken.append(f"{nlp.hhmm_to_12h(slot)} ({slot})")
     if not spoken:
         return ""
     if len(spoken) == 1:
@@ -467,12 +489,13 @@ def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
             0.7,
         )
         return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.5)
-    base = _with_ack(f"On {date}, we have {joined}. Which time works for you?", 0.9)
+    pretty_day = describe_day(date)
+    base = _with_ack(f"On {pretty_day} ({date}), we have {joined}. Which time works for you?", 0.9)
     return nlp.maybe_prefix_with_filler(base, THINKING_FILLERS, chance=0.8)
 
 
 def _booking_time_reprompt(slots: Sequence[str]) -> PromptPayload:
-    cleaned = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
+    cleaned = [f"{nlp.hhmm_to_12h(slot)} ({slot})" for slot in slots if slot]
     if cleaned:
         preview = ", ".join(cleaned[:3])
         prompt = f"Times available are {preview}. Which would you like?"
@@ -491,20 +514,34 @@ def _booking_name_prompt(time: str) -> str:
 
 
 def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
-    spoken_time = (
-        nlp.hhmm_to_12h(state["booking_time"]) if state.get("booking_time") else state.get("booking_time", "")
-    )
+    booking_date = state.get("booking_date")
+    booking_time = state.get("booking_time")
+    if booking_date and booking_time:
+        when_text = f"{format_slot_time(booking_date, booking_time)} ({booking_date})"
+        connector = "on"
+    elif booking_date:
+        when_text = f"{describe_day(booking_date)} ({booking_date})"
+        connector = "on"
+    elif booking_time:
+        when_text = nlp.hhmm_to_12h(booking_time)
+        connector = "at"
+    else:
+        when_text = "the time we discussed"
+        connector = "at"
     message = (
         f"Great, {state['caller_name']}. Shall I book you in for {state['booking_appt_type']} "
-        f"on {state['booking_date']} at {spoken_time}?"
+        f"{connector} {when_text}?"
     )
     message = _with_ack(message, 0.7)
     return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.6)
 
 
 def _booking_confirmed_message(state: Dict[str, Any]) -> str:
+    human_date = describe_day(state["booking_date"]) if state.get("booking_date") else state.get("booking_date", "")
+    if state.get("booking_date"):
+        human_date = f"{human_date} ({state['booking_date']})" if human_date else state["booking_date"]
     msg = random.choice(CONFIRM_TEMPLATES).format(
-        date=state["booking_date"],
+        date=human_date,
         time=nlp.hhmm_to_12h(state["booking_time"]),
         type=state["booking_appt_type"],
         name=state["caller_name"] or "",
@@ -572,7 +609,7 @@ def _handle_availability_request(state: Dict[str, Any], user_input: str) -> Resp
         nxt = _next_available_slot()
         if nxt:
             message = _with_ack(
-                f"That day looks full. The next available is {nxt['date']} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?",
+                f"That day looks full. The next available is {describe_day(nxt['date'])} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?",
                 0.75,
             )
         else:
@@ -667,12 +704,19 @@ def _start_booking(state: Dict[str, Any], initial_text: Optional[str] = None) ->
     return _respond_with_gather(state, _booking_type_prompt(), action="/gather-booking")
 
 
-def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_input: str) -> Response:
+def _handle_primary_intent(
+    state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
+) -> Response:
     lowered = user_input.lower().strip()
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
     if intent in INFO_LINES:
-        message = _with_ack(f"{INFO_LINES[intent]} {ANYTHING_ELSE_PROMPT}", 0.85)
+        info_text = INFO_LINES[intent]
+        if intent == "prices":
+            service = nlp.infer_service(user_input)
+            if service and service in SERVICE_INFO:
+                info_text = SERVICE_INFO[service]
+        message = _with_ack(f"{info_text} {ANYTHING_ELSE_PROMPT}", 0.85)
         payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
         state["intent"] = intent
         state["stage"] = "follow_up"
@@ -689,15 +733,13 @@ def _handle_primary_intent(state: Dict[str, Any], intent: Optional[str], user_in
         state["stage"] = "intent"
         return _respond_with_gather(state, _with_ack(CLARIFY_PROMPT, 0.65))
     state["intent"] = state.get("intent") or "other"
-    clarifier = pick_clarifier()
-    if clarifier:
-        prompt = _with_ack(clarifier, 0.7)
-    else:
-        prompt = _with_ack(CLARIFY_PROMPT, 0.65)
+    prompt = _clarifier_prompt(confidence)
     return _respond_with_gather(state, prompt)
 
 
-def _handle_follow_up(state: Dict[str, Any], intent: Optional[str], user_input: str) -> Response:
+def _handle_follow_up(
+    state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
+) -> Response:
     lowered = user_input.lower().strip()
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
@@ -707,25 +749,23 @@ def _handle_follow_up(state: Dict[str, Any], intent: Optional[str], user_input: 
         return _handle_availability_request(state, user_input)
     if intent in INFO_LINES or intent == "booking":
         state["stage"] = "intent"
-        return _handle_primary_intent(state, intent, user_input)
+        return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
         state["stage"] = "intent"
         return _respond_with_gather(state, _with_ack(CLARIFY_PROMPT, 0.65))
     state["stage"] = "intent"
-    clarifier = pick_clarifier()
-    if clarifier:
-        prompt = _with_ack(clarifier, 0.7)
-    else:
-        prompt = _with_ack(CLARIFY_PROMPT, 0.65)
+    prompt = _clarifier_prompt(confidence)
     return _respond_with_gather(state, prompt)
 
 
-def _handle_booking_type(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+def _handle_booking_type(
+    state: Dict[str, Any], user_input: str, intent: Optional[str], confidence: Optional[float] = None
+) -> Response:
     if intent == "goodbye":
         return _respond_with_goodbye(state)
     if intent in INFO_LINES:
         state["stage"] = "intent"
-        return _handle_primary_intent(state, intent, user_input)
+        return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
         return _handle_availability_request(state, user_input)
 
@@ -748,13 +788,15 @@ def _handle_booking_type(state: Dict[str, Any], user_input: str, intent: Optiona
     return _respond_with_gather(state, _booking_date_prompt(match), action="/gather-booking")
 
 
-def _handle_booking_date(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+def _handle_booking_date(
+    state: Dict[str, Any], user_input: str, intent: Optional[str], confidence: Optional[float] = None
+) -> Response:
     lowered = user_input.lower().strip()
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
     if intent in INFO_LINES:
         state["stage"] = "intent"
-        return _handle_primary_intent(state, intent, user_input)
+        return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
         return _handle_availability_request(state, user_input)
 
@@ -785,7 +827,7 @@ def _handle_booking_date(state: Dict[str, Any], user_input: str, intent: Optiona
         if nxt:
             state["booking_suggested_slot"] = nxt
             message = (
-                f"Sorry, no free times on that day. The next available is {nxt['date']} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?"
+                f"Sorry, no free times on that day. The next available is {describe_day(nxt['date'])} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?"
             )
         else:
             message = "Sorry, I can’t see any available times in the schedule right now."
@@ -796,12 +838,14 @@ def _handle_booking_date(state: Dict[str, Any], user_input: str, intent: Optiona
     return _respond_with_gather(state, prompt, action="/gather-booking")
 
 
-def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+def _handle_booking_time(
+    state: Dict[str, Any], user_input: str, intent: Optional[str], confidence: Optional[float] = None
+) -> Response:
     if intent == "goodbye":
         return _respond_with_goodbye(state)
     if intent in INFO_LINES:
         state["stage"] = "intent"
-        return _handle_primary_intent(state, intent, user_input)
+        return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
         return _handle_availability_request(state, user_input)
 
@@ -823,7 +867,12 @@ def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optiona
     if lowered in ANYTIME_PHRASES:
         hhmm = available_list[0]
     else:
-        hhmm = nlp.fuzzy_pick_time(user_input, available_list)
+        direct_pick = nlp.parse_time_like(user_input)
+        hhmm = None
+        if direct_pick and (not avail_set or direct_pick in avail_set):
+            hhmm = direct_pick
+        if not hhmm:
+            hhmm = nlp.fuzzy_pick_time(user_input, available_list)
 
     if not hhmm:
         state["retries"] += 1
@@ -861,12 +910,14 @@ def _handle_booking_time(state: Dict[str, Any], user_input: str, intent: Optiona
     return _respond_with_gather(state, _booking_type_prompt(), action="/gather-booking")
 
 
-def _handle_booking_name(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+def _handle_booking_name(
+    state: Dict[str, Any], user_input: str, intent: Optional[str], confidence: Optional[float] = None
+) -> Response:
     if intent == "goodbye":
         return _respond_with_goodbye(state)
     if intent in INFO_LINES:
         state["stage"] = "intent"
-        return _handle_primary_intent(state, intent, user_input)
+        return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
         return _handle_availability_request(state, user_input)
 
@@ -886,14 +937,16 @@ def _handle_booking_name(state: Dict[str, Any], user_input: str, intent: Optiona
     return _respond_with_gather(state, _booking_confirm_prompt(state), action="/gather-booking")
 
 
-def _handle_booking_confirmation(state: Dict[str, Any], user_input: str, intent: Optional[str]) -> Response:
+def _handle_booking_confirmation(
+    state: Dict[str, Any], user_input: str, intent: Optional[str], confidence: Optional[float] = None
+) -> Response:
     lowered = user_input.lower().strip()
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         state["stage"] = "follow_up"
         return _respond_with_gather(state, BOOKING_DECLINED_PROMPT)
     if intent in INFO_LINES:
         state["stage"] = "intent"
-        return _handle_primary_intent(state, intent, user_input)
+        return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
         return _handle_availability_request(state, user_input)
 
@@ -985,6 +1038,11 @@ async def gather_intent_route(request: Request) -> Response:
         return _hangup_only_response()
 
     speech_result = (form.get("SpeechResult") or "").strip()
+    raw_confidence = form.get("Confidence")
+    try:
+        confidence = float(raw_confidence) if raw_confidence not in (None, "") else None
+    except (TypeError, ValueError):
+        confidence = None
     if not speech_result:
         reprompt = CLARIFY_PROMPT if state.get("stage") == "intent" else ANYTHING_ELSE_PROMPT
         return _handle_silence(state, reprompt=reprompt)
@@ -999,9 +1057,9 @@ async def gather_intent_route(request: Request) -> Response:
     )
 
     if state.get("stage") == "follow_up":
-        return _handle_follow_up(state, intent, speech_result)
+        return _handle_follow_up(state, intent, speech_result, confidence=confidence)
     state["stage"] = "intent"
-    return _handle_primary_intent(state, intent, speech_result)
+    return _handle_primary_intent(state, intent, speech_result, confidence=confidence)
 
 
 @app.post("/gather-booking")
@@ -1019,6 +1077,11 @@ async def gather_booking_route(request: Request) -> Response:
         return _hangup_only_response()
 
     speech_result = (form.get("SpeechResult") or "").strip()
+    raw_confidence = form.get("Confidence")
+    try:
+        confidence = float(raw_confidence) if raw_confidence not in (None, "") else None
+    except (TypeError, ValueError):
+        confidence = None
     stage = state.get("stage")
     if not speech_result:
         if stage == "booking_type":
@@ -1051,17 +1114,17 @@ async def gather_booking_route(request: Request) -> Response:
     intent = parse_intent(speech_result)
 
     if stage == "booking_type":
-        return _handle_booking_type(state, speech_result, intent)
+        return _handle_booking_type(state, speech_result, intent, confidence=confidence)
     if stage == "booking_date":
-        return _handle_booking_date(state, speech_result, intent)
+        return _handle_booking_date(state, speech_result, intent, confidence=confidence)
     if stage == "booking_time":
-        return _handle_booking_time(state, speech_result, intent)
+        return _handle_booking_time(state, speech_result, intent, confidence=confidence)
     if stage == "booking_name":
-        return _handle_booking_name(state, speech_result, intent)
+        return _handle_booking_name(state, speech_result, intent, confidence=confidence)
     if stage == "booking_confirm":
-        return _handle_booking_confirmation(state, speech_result, intent)
+        return _handle_booking_confirmation(state, speech_result, intent, confidence=confidence)
 
-    return _handle_primary_intent(state, intent, speech_result)
+    return _handle_primary_intent(state, intent, speech_result, confidence=confidence)
 
 
 @app.post("/status")

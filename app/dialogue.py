@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import calendar
+import datetime
 import logging
 import random
 from typing import Optional
@@ -12,11 +14,11 @@ log = logging.getLogger("app.dialogue")
 
 
 GREETINGS = [
-    "Hiya, thanks for calling Oak Dental — how can I help today?",
-    "Hello, you’ve reached Oak Dental. What can I do for you?",
-    "Good to hear from you at Oak Dental. How can I help?",
-    "Oak Dental speaking — how can I help today?",
-    "Thanks for calling Oak Dental. Would you like our hours, prices, or to make a booking?",
+    "Hi, Oak Dental. How can I help today?",
+    "Hello, Oak Dental speaking — how can I help?",
+    "Hi there, Oak Dental — what do you need today?",
+    "Oak Dental here. How can I help you?",
+    "Thanks for calling Oak Dental. What can I do for you?",
 ]
 
 DISCLAIMER_LINE = "Just so you know, I’m your AI receptionist, not a medical professional."
@@ -31,57 +33,41 @@ HOLDERS = [
     "Yeah, sure.",
     "Hmm, okay.",
     "Right, I understand.",
-    "Lovely, thanks.",
-    "No worries.",
-    "Brilliant.",
-    "Sure thing.",
-    "Absolutely.",
-    "That's alright.",
-    "All good.",
-    "Great stuff.",
-    "Perfect.",
-    "Grand.",
-    "Okay, sure.",
-    "Sounds good.",
     "No problem.",
     "Alright.",
     "Got it.",
     "Makes sense.",
+    "Absolutely.",
+    "Sure thing.",
     "Okay, noted.",
-    "Alright, let me check.",
-    "Okay, one second.",
-    "Right, let’s see here.",
-    "Yep, I can help with that.",
-    "Okay, I hear you.",
+    "All good.",
+    "Sounds good.",
+    "Okay, let me check.",
+    "One moment.",
+    "Alright, give me a sec.",
     "Great, thanks.",
+    "Lovely, thanks.",
+    "No worries.",
 ]
 
 CLARIFIERS = [
+    "Sorry, could you repeat that in a few words?",
+    "I didn’t quite catch that — was that a booking, our hours, or prices?",
+    "One more time please — which day did you want?",
+    "Could you say that slowly for me?",
     "Sorry, could you say that again?",
-    "I didn't quite catch that.",
     "Mind repeating that for me?",
-    "Just checking, are you after our hours, address, prices, or a booking?",
-    "Could you let me know if you need hours, address, prices, or to book in?",
-    "I'm still here, could you repeat that?",
-    "Would you mind saying that one more time?",
     "I want to be sure I heard you right, was it about hours, address, prices, or booking?",
     "Apologies, the line dipped for a second. What do you need today?",
-    "Do you need help with hours, address, prices, or a booking?",
-    "Sorry, could you say that again in a few words?",
-    "I didn’t quite catch that — did you mean a booking, our hours, or prices?",
-    "One more time please — which day would you like?",
-    "Could you repeat that slowly for me?",
 ]
 
 THINKING_FILLERS = [
-    "Okay, one moment.",
-    "Alright, let me just check.",
+    "Okay, one moment while I check.",
+    "Alright, let me have a quick look.",
     "No worries, give me a second.",
-    "Okay, let’s see what we’ve got.",
-    "Sure, let me pull that up.",
     "Right, I’m checking that now.",
-    "Okay, just a sec.",
-    "Alright, I’ll take a quick look.",
+    "Okay, let's see what we've got.",
+    "Sure, I’m pulling that up.",
 ]
 
 NAME_CLARIFIERS = [
@@ -116,10 +102,9 @@ GOODBYES = [
 ]
 
 CLOSINGS = [
-    "Okay, thanks for calling — have a lovely day. Goodbye.",
-    "Alright, I appreciate the call. Take care, goodbye.",
-    "Thanks for calling. Have a great day. Goodbye.",
-    "Cheers for calling. Bye for now.",
+    "Okay, thanks for calling. Have a lovely day. Goodbye.",
+    "Alright, appreciate the call. Take care — goodbye.",
+    "Thanks for calling Oak Dental. Bye for now.",
 ]
 
 CONFIRM_TEMPLATES = [
@@ -149,6 +134,32 @@ AVAILABILITY_OPTIONS = [
     "Tomorrow at 3pm",
     "Friday at 11am",
 ]
+
+
+def describe_day(date: str) -> str:
+    try:
+        parsed = datetime.datetime.strptime(date, "%Y-%m-%d")
+    except Exception:
+        return date
+    day_name = calendar.day_name[parsed.weekday()]
+    month = parsed.strftime("%B")
+    day = parsed.day
+    suffix = "th"
+    if day in {1, 21, 31}:
+        suffix = "st"
+    elif day in {2, 22}:
+        suffix = "nd"
+    elif day in {3, 23}:
+        suffix = "rd"
+    return f"{day_name}, {month} {day}{suffix}"
+
+
+def format_slot_time(date: str, time: str) -> str:
+    spoken_day = describe_day(date)
+    spoken_time = nlp.hhmm_to_12h(time) if time else time
+    if spoken_time:
+        return f"{spoken_day} at {spoken_time}"
+    return spoken_day
 
 
 def build_menu_prompt() -> str:

@@ -4,7 +4,7 @@ import calendar
 import re
 from datetime import datetime, timedelta
 from datetime import date as _date
-from typing import Sequence
+from typing import Optional, Sequence
 
 
 def today_date() -> _date:
@@ -139,8 +139,13 @@ def maybe_prefix_with_filler(
 
     parts: list[tuple[str, str]] = []
     if fillers and chance > 0 and random.random() < chance:
-        parts.append(("say", random.choice(list(fillers))))
-        parts.append(("pause", "0.2"))
+        filler = random.choice(list(fillers)).strip()
+        if text:
+            combined = f"{filler} {text}" if filler else text
+        else:
+            combined = filler
+        parts.append(("say", combined.strip()))
+        return parts
     parts.append(("say", text))
     return parts
 
@@ -232,3 +237,79 @@ def fuzzy_pick_time(user_text: str, available_hhmm: list[str]) -> str | None:
 
     return None
 
+_SERVICE_SYNONYMS = {
+    "checkup": [
+        "check up",
+        "check-up",
+        "checkup",
+        "exam",
+        "examination",
+        "see the dentist",
+        "quick look",
+    ],
+    "hygiene": [
+        "hygiene",
+        "clean",
+        "cleaning",
+        "scale",
+        "scale and polish",
+        "polish",
+        "deep clean",
+    ],
+    "whitening": [
+        "whiten",
+        "whitening",
+        "teeth whitening",
+        "bleaching",
+    ],
+    "extraction": [
+        "extract",
+        "extraction",
+        "tooth out",
+        "pull a tooth",
+        "tooth removal",
+        "remove a tooth",
+        "pull my tooth",
+    ],
+}
+
+
+def infer_service(text: str) -> Optional[str]:
+    lowered = (text or "").lower()
+    for canonical, variants in _SERVICE_SYNONYMS.items():
+        for variant in variants:
+            if variant in lowered:
+                return canonical
+    return None
+
+
+_HOUR12 = re.compile(
+    r"\b(?P<h>\d{1,2})(:(?P<m>\d{2}))?\s*(?P<ampm>a\.?m\.?|p\.?m\.?|am|pm)?\b"
+)
+
+
+def parse_time_like(text: str) -> Optional[str]:
+    lowered = (text or "").lower()
+    if not lowered:
+        return None
+    half_match = re.search(r"\bhalf\s+past\s+(\d{1,2})\b", lowered)
+    if half_match:
+        hour = int(half_match.group(1)) % 12
+        # assume afternoon preference; downstream logic may adjust context
+        return f"{hour + 12:02d}:30"
+
+    match = _HOUR12.search(lowered)
+    if not match:
+        return None
+
+    hour = int(match.group("h"))
+    minute = match.group("m") or "00"
+    ampm = match.group("ampm")
+    if ampm:
+        ampm_clean = ampm.replace(".", "")
+        if ampm_clean == "pm" and hour < 12:
+            hour += 12
+        if ampm_clean == "am" and hour == 12:
+            hour = 0
+    hour %= 24
+    return f"{hour:02d}:{int(minute):02d}"
