@@ -19,9 +19,13 @@ def _gather_text(xml: str) -> str:
     root = ET.fromstring(xml)
     gather = root.find("Gather")
     assert gather is not None, "Expected Gather element"
-    say = gather.find("Say")
-    assert say is not None, "Expected Say within Gather"
-    return (say.text or "").strip()
+    texts = []
+    for say in gather.findall("Say"):
+        text = (say.text or "").strip()
+        if text:
+            texts.append(text)
+    assert texts, "Expected Say within Gather"
+    return " ".join(texts)
 
 
 def _call_route(route, data: dict[str, str]):
@@ -198,6 +202,7 @@ def test_booking_confirmation_prompts_anything_else_and_goodbye(monkeypatch):
     )
     prompt = _gather_text(response.body.decode())
     assert "Is there anything else I can help you with?" in prompt
+    assert "By providing your number, you agree to receive appointment confirmations and reminders." in prompt
 
     response = _call_route(
         gather_intent_route,

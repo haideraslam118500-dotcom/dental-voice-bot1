@@ -1,6 +1,6 @@
 import xml.etree.ElementTree as ET
 
-from main import create_gather_twiml, create_goodbye_twiml
+from main import MAX_SPEECH_CHARS, create_gather_twiml, create_goodbye_twiml
 
 VOICE = "Polly.Amy"
 LANGUAGE = "en-GB"
@@ -55,3 +55,24 @@ def test_goodbye_twiml_includes_hangup():
     root = ET.fromstring(xml)
     assert root.find("Say") is not None
     assert root.find("Hangup") is not None
+
+
+def test_gather_splits_long_prompt_into_multiple_chunks():
+    long_text = (
+        "We have appointments available next Tuesday at nine thirty, ten thirty, and twelve fifteen, "
+        "as well as Wednesday at nine or eleven if those suit you."
+    )
+    xml = create_gather_twiml(
+        long_text,
+        action="/gather-intent",
+        voice=VOICE,
+        language=LANGUAGE,
+    )
+    gather = _parse_gather(xml)
+    says = gather.findall("Say")
+    assert len(says) >= 2
+    lengths = [len((say.text or "").strip()) for say in says if (say.text or "").strip()]
+    assert all(length <= MAX_SPEECH_CHARS for length in lengths)
+    combined = " ".join((say.text or "").strip() for say in says)
+    assert "appointments available next Tuesday" in combined
+    assert "Wednesday at nine" in combined

@@ -48,6 +48,10 @@ ensure_storage()
 
 VOICE = settings.voice
 LANGUAGE = settings.language
+MAX_SPEECH_CHARS = 110
+CONSENT_LINE = (
+    "By providing your number, you agree to receive appointment confirmations and reminders."
+)
 
 _voice_lock = Lock()
 _active_voice = VOICE
@@ -177,6 +181,35 @@ def _say_with_voice(
         say_callable(message, voice=fallback_voice, language=language)
 
 
+def _say_segments(
+    say_callable: Callable[[str, Optional[str], Optional[str]], Any],
+    message: str,
+    *,
+    voice: str,
+    language: str,
+    call_sid: Optional[str] = None,
+) -> None:
+    segments = nlp.split_for_speech(message, max_len=MAX_SPEECH_CHARS)
+    if not segments:
+        cleaned = (message or "").strip()
+        if not cleaned:
+            return
+        segments = [cleaned]
+    current_voice = voice
+    for segment in segments:
+        text = (segment or "").strip()
+        if not text:
+            continue
+        _say_with_voice(
+            say_callable,
+            text,
+            preferred_voice=current_voice,
+            language=language,
+            call_sid=call_sid,
+        )
+        current_voice = _get_active_voice()
+
+
 _state_lock = Lock()
 _call_states: Dict[str, Dict[str, Any]] = {}
 CALLS = _call_states
@@ -220,6 +253,7 @@ def _initial_state(call_sid: str, form_data: Mapping[str, Any]) -> Dict[str, Any
         "booking_logged": False,
         "metadata": metadata,
         "ending": False,
+        "consent_said": False,
     }
 
 
@@ -311,20 +345,20 @@ def create_gather_twiml(
         gather_kwargs["hints"] = hints
     gather = response.gather(**gather_kwargs)
     if isinstance(prompt, str):
-        _say_with_voice(
+        _say_segments(
             gather.say,
             prompt,
-            preferred_voice=voice,
+            voice=voice,
             language=language,
             call_sid=call_sid,
         )
     else:
         for kind, value in prompt:
             if kind == "say":
-                _say_with_voice(
+                _say_segments(
                     gather.say,
                     value,
-                    preferred_voice=voice,
+                    voice=voice,
                     language=language,
                     call_sid=call_sid,
                 )
@@ -341,10 +375,10 @@ def create_goodbye_twiml(
     call_sid: Optional[str] = None,
 ) -> str:
     response = VoiceResponse()
-    _say_with_voice(
+    _say_segments(
         response.say,
         message,
-        preferred_voice=voice,
+        voice=voice,
         language=language,
         call_sid=call_sid,
     )
@@ -536,7 +570,7 @@ def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
     return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.6)
 
 
-def _booking_confirmed_message(state: Dict[str, Any]) -> str:
+def _booking_confirmed_message(state: Dict[str, Any]) -> PromptPayload:
     human_date = describe_day(state["booking_date"]) if state.get("booking_date") else state.get("booking_date", "")
     if state.get("booking_date"):
         human_date = f"{human_date} ({state['booking_date']})" if human_date else state["booking_date"]
@@ -546,7 +580,13 @@ def _booking_confirmed_message(state: Dict[str, Any]) -> str:
         type=state["booking_appt_type"],
         name=state["caller_name"] or "",
     )
-    return _with_ack(f"{msg} Is there anything else I can help you with?", 0.6)
+    parts: list[PromptSegment] = []
+    parts.append(("say", _with_ack(msg, 0.6)))
+    if not state.get("consent_said"):
+        parts.append(("say", CONSENT_LINE))
+        state["consent_said"] = True
+    parts.append(("say", _with_ack(ANYTHING_ELSE_PROMPT, 0.6)))
+    return parts
 
 
 def _reset_booking_context(state: Dict[str, Any]) -> None:

@@ -138,16 +138,64 @@ def maybe_prefix_with_filler(
     import random
 
     parts: list[tuple[str, str]] = []
+    text = (text or "").strip()
     if fillers and chance > 0 and random.random() < chance:
         filler = random.choice(list(fillers)).strip()
-        if text:
-            combined = f"{filler} {text}" if filler else text
-        else:
-            combined = filler
-        parts.append(("say", combined.strip()))
-        return parts
-    parts.append(("say", text))
+        if filler:
+            parts.append(("say", filler))
+    if text:
+        parts.append(("say", text))
+    if not parts:
+        parts.append(("say", text))
     return parts
+
+
+def split_for_speech(text: str, max_len: int = 110) -> list[str]:
+    """Split text into short, speech-friendly segments."""
+
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+
+    segments: list[str] = []
+    raw_chunks = [
+        chunk.strip()
+        for chunk in re.split(r"(?<=[\.\!\?])\s+|\n+", cleaned)
+        if chunk.strip()
+    ]
+    if not raw_chunks:
+        raw_chunks = [cleaned]
+
+    for chunk in raw_chunks:
+        if len(chunk) <= max_len:
+            segments.append(chunk)
+            continue
+
+        pieces = [part.strip() for part in re.split(r"\s*[;,]\s*", chunk) if part.strip()]
+        if not pieces:
+            pieces = [chunk]
+
+        current = ""
+        for piece in pieces:
+            candidate = f"{current} {piece}".strip() if current else piece
+            if len(candidate) <= max_len:
+                current = candidate
+                continue
+
+            if current:
+                segments.append(current)
+            remaining = piece
+            while len(remaining) > max_len:
+                head = remaining[:max_len].rstrip()
+                if head:
+                    segments.append(head)
+                remaining = remaining[max_len:].lstrip()
+            current = remaining
+
+        if current:
+            segments.append(current)
+
+    return segments
 
 
 def fuzzy_pick_time(user_text: str, available_hhmm: list[str]) -> str | None:
