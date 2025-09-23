@@ -407,7 +407,10 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
     _remember_agent_line(state, message)
     state["stage"] = "completed"
     state["ending"] = True
-    logger.info("Ending call", extra={"call_sid": state.get("call_sid"), "text": message})
+    logger.info(
+        "Ending call",
+        extra={"call_sid": state.get("call_sid"), "goodbye_text": message},
+    )
     return _twiml_response(
         create_goodbye_twiml(
             message,

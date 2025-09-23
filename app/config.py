@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
-import yaml
+from yaml import YAMLError, safe_load
 from dotenv import load_dotenv
 
 
@@ -48,11 +48,15 @@ def _load_practice_config() -> PracticeConfig:
 
     if PRACTICE_CONFIG_PATH.exists():
         try:
-            loaded = yaml.safe_load(PRACTICE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+            loaded = safe_load(PRACTICE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
         except OSError as exc:  # pragma: no cover - configuration read errors are rare
             raise RuntimeError(f"Unable to read practice configuration: {exc}") from exc
-        except yaml.YAMLError as exc:  # pragma: no cover - invalid YAML should crash early
+        except YAMLError as exc:  # pragma: no cover - invalid YAML should crash early
             raise RuntimeError(f"Invalid YAML in {PRACTICE_CONFIG_PATH}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise RuntimeError(
+                f"Invalid YAML in {PRACTICE_CONFIG_PATH}: top-level document must be a mapping"
+            )
         defaults.update({k: v for k, v in loaded.items() if v is not None})
 
     return PracticeConfig(
