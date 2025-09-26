@@ -3,11 +3,11 @@ voice: "Polly.Amy"
 language: "en-GB"
 
 openings:
-  - "Hi, Oak Dental. How can I help today?"
-  - "Hello, Oak Dental speaking — how can I help?"
-  - "Hi there, Oak Dental — what do you need today?"
-  - "Oak Dental here. How can I help you?"
-  - "Thanks for calling Oak Dental. What can I do for you?"
+  - "Hi, thanks for calling Oak Dental — how can I help today?"
+  - "Hello, you’ve reached Oak Dental. What can I do for you?"
+  - "Oak Dental, good to hear from you — how can I help?"
+  - "Hi there, Oak Dental speaking. What do you need today?"
+  - "Thanks for calling Oak Dental. How can I help?"
 
 backchannels:
   - "Okay, that's fine."
@@ -22,12 +22,11 @@ backchannels:
   - "Sure thing."
   - "Okay, noted."
   - "All good."
-  - "Sounds good."
-  - "Okay, let me check."
+  - "Bear with me a sec."
   - "One moment."
-  - "Alright, give me a sec."
-  - "Great, thanks."
-  - "Lovely, thanks."
+  - "Let me just check."
+  - "No worries."
+  - "That’s fine."
 
 thinking_fillers:
   - "Okay, one moment while I check."
@@ -51,9 +50,12 @@ closings:
 hours: "We're open Monday to Friday nine to five, Saturday nine to one. Closed Sundays and bank holidays."
 address: "We're at 12 High Street, Oakford, OX1 2AB. Entrance next to the pharmacy."
 prices: "A routine check-up is forty five pounds. Hygiene is sixty five. Whitening starts from two hundred and fifty."
+service_prices:
+  check-up: "A routine check-up is forty five pounds."
+  hygiene: "Hygiene is sixty five pounds."
+  whitening: "Whitening starts from two hundred and fifty pounds."
+  extraction: "Tooth extraction is one hundred and twenty pounds."
 
-services:
-  checkup: "Check-up is £45"
-  hygiene: "Hygiene is £65"
-  whitening: "Whitening starts from £250"
-  extraction: "Tooth extraction is £120"
+# When there’s silence, how long to wait before we reprompt (seconds)
+no_speech_timeout: 3
+max_silence_reprompts: 2

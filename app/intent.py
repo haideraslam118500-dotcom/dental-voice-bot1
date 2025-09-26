@@ -3,12 +3,14 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional
 
-from app.nlp import infer_service
+from app.nlp import infer_service, normalise_text, detect_service
 
 
 def _normalize(text: str) -> str:
-    text = (text or "").replace("’", "'")
-    text = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    # Use shared normalisation so slot extraction and intent logic align.
+    text = normalise_text(text)
+    text = text.replace("’", "'")
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -283,4 +285,15 @@ def extract_appt_type(text: str) -> Optional[str]:
     return None
 
 
-__all__ = ["classify", "parse_intent", "extract_appt_type"]
+def classify_with_slots(text: Optional[str]) -> tuple[Optional[str], dict[str, str]]:
+    """Return the recognised intent along with any slots (e.g. inferred service)."""
+
+    intent = classify(text)
+    slots: dict[str, str] = {}
+    service = detect_service(text)
+    if service:
+        slots["service"] = service
+    return intent, slots
+
+
+__all__ = ["classify", "parse_intent", "extract_appt_type", "classify_with_slots"]

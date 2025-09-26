@@ -24,8 +24,9 @@ from app.dialogue import (
     format_slot_time,
     pick_clarifier,
     pick_holder,
+    pick_name_clarifier,
 )
-from app.intent import extract_appt_type, parse_intent
+from app.intent import extract_appt_type, classify_with_slots
 from app.logging_config import setup_logging
 from app.persistence import (
     append_booking,
@@ -85,7 +86,21 @@ INFO_LINES = {
     "prices": settings.practice.prices,
 }
 
-SERVICE_INFO = {k.lower(): v for k, v in (settings.practice.services or {}).items()}
+SERVICE_INFO: Dict[str, str] = {}
+for _service_key, _service_value in (settings.practice.service_prices or {}).items():
+    lowered = _service_key.lower()
+    SERVICE_INFO[lowered] = _service_value
+    SERVICE_INFO[lowered.replace("-", "")] = _service_value
+    SERVICE_INFO[lowered.replace(" ", "")] = _service_value
+
+SERVICE_KEY_TO_APPT = {
+    "check-up": "Check-up",
+    "hygiene": "Hygiene",
+    "whitening": "Whitening",
+    "extraction": "Extraction",
+}
+
+APPT_TO_SERVICE_KEY = {v: k for k, v in SERVICE_KEY_TO_APPT.items()}
 
 GOODBYES = [
     "Okay, thanks for calling. Have a lovely day. Goodbye.",
@@ -314,10 +329,9 @@ def _build_opening_prompt(state: Dict[str, Any]) -> str:
     if not state.get("disclaimer_said") and DISCLAIMER_LINE:
         parts.append(DISCLAIMER_LINE)
         state["disclaimer_said"] = True
-    lower = greeting.lower()
-    if not any(keyword in lower for keyword in ("hours", "prices", "booking")):
+    if not state.get("menu_said") and MENU_STATEMENT:
         parts.append(MENU_STATEMENT)
-        parts.append(CLARIFY_PROMPT)
+        state["menu_said"] = True
     return " ".join(part for part in parts if part)
 
 
@@ -426,6 +440,49 @@ def _with_ack(text: str, chance: float = 0.7) -> str:
     return f"{holder} {text}"
 
 
+def _lookup_service_price(service_key: Optional[str]) -> Optional[str]:
+    if not service_key:
+        return None
+    lowered = service_key.lower()
+    for key in {lowered, lowered.replace("-", ""), lowered.replace(" ", "")}:
+        if key in SERVICE_INFO:
+            return SERVICE_INFO[key]
+    return None
+
+
+def _respond_with_price_details(state: Dict[str, Any], service_key: str) -> Response:
+    info_text = _lookup_service_price(service_key) or INFO_LINES["prices"]
+    follow_up = "Would you like to book that?"
+    message = f"{info_text} {follow_up}".strip()
+    payload = nlp.maybe_prefix_with_filler(_with_ack(message, 0.85), THINKING_FILLERS, chance=0.4)
+    state["intent"] = "prices"
+    state["stage"] = "follow_up"
+    state["retries"] = 0
+    state["last_service"] = service_key
+    state.pop("awaiting_price_service", None)
+    return _respond_with_gather(state, payload)
+
+
+def _prompt_for_service_choice(state: Dict[str, Any]) -> Response:
+    question = "Which treatment did you have in mind — check-up, hygiene, whitening, or extraction?"
+    prompt = _with_ack(question, 0.75)
+    state["awaiting_price_service"] = True
+    state["intent"] = "prices"
+    state["stage"] = "follow_up"
+    return _respond_with_gather(state, prompt)
+
+
+def _handle_price_service_follow_up(state: Dict[str, Any], user_input: str) -> Response:
+    service_key = nlp.detect_service(user_input)
+    if service_key:
+        return _respond_with_price_details(state, service_key)
+    apology = "Sorry, was that for check-up, hygiene, whitening, or extraction?"
+    prompt = _with_ack(apology, 0.7)
+    state["awaiting_price_service"] = True
+    state["stage"] = "follow_up"
+    return _respond_with_gather(state, prompt)
+
+
 def _clarifier_prompt(confidence: Optional[float]) -> str:
     low_confidence = confidence is not None and confidence < 0.6
     if low_confidence:
@@ -443,12 +500,14 @@ def _respond_with_gather(
     hints: Optional[str] = None,
 ) -> Response:
     _remember_agent_line(state, _prompt_to_text(prompt))
+    timeout = settings.practice.no_speech_timeout or 5
     twiml = create_gather_twiml(
         prompt,
         action=action,
         voice=_get_active_voice(),
         language=LANGUAGE,
         hints=hints,
+        timeout=int(timeout),
         call_sid=state.get("call_sid"),
     )
     return _twiml_response(twiml)
@@ -505,7 +564,7 @@ def _format_times(slots: Sequence[str]) -> str:
     for slot in slots:
         if not slot:
             continue
-        spoken.append(f"{nlp.hhmm_to_12h(slot)} ({slot})")
+        spoken.append(f"{nlp.human_time_phrase(slot)} at {slot}")
     if not spoken:
         return ""
     if len(spoken) == 1:
@@ -523,13 +582,13 @@ def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
             0.7,
         )
         return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.5)
-    pretty_day = describe_day(date)
-    base = _with_ack(f"On {pretty_day} ({date}), we have {joined}. Which time works for you?", 0.9)
+    pretty_day = nlp.human_day_phrase(date)
+    base = _with_ack(f"On {date}, {pretty_day}, we have {joined}. Which time works for you?", 0.9)
     return nlp.maybe_prefix_with_filler(base, THINKING_FILLERS, chance=0.8)
 
 
 def _booking_time_reprompt(slots: Sequence[str]) -> PromptPayload:
-    cleaned = [f"{nlp.hhmm_to_12h(slot)} ({slot})" for slot in slots if slot]
+    cleaned = [f"{nlp.human_time_phrase(slot)} at {slot}" for slot in slots if slot]
     if cleaned:
         preview = ", ".join(cleaned[:3])
         prompt = f"Times available are {preview}. Which would you like?"
@@ -551,13 +610,13 @@ def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
     booking_date = state.get("booking_date")
     booking_time = state.get("booking_time")
     if booking_date and booking_time:
-        when_text = f"{format_slot_time(booking_date, booking_time)} ({booking_date})"
+        when_text = format_slot_time(booking_date, booking_time)
         connector = "on"
     elif booking_date:
-        when_text = f"{describe_day(booking_date)} ({booking_date})"
+        when_text = nlp.human_day_phrase(booking_date)
         connector = "on"
     elif booking_time:
-        when_text = nlp.hhmm_to_12h(booking_time)
+        when_text = nlp.human_time_phrase(booking_time)
         connector = "at"
     else:
         when_text = "the time we discussed"
@@ -571,12 +630,13 @@ def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
 
 
 def _booking_confirmed_message(state: Dict[str, Any]) -> PromptPayload:
-    human_date = describe_day(state["booking_date"]) if state.get("booking_date") else state.get("booking_date", "")
-    if state.get("booking_date"):
-        human_date = f"{human_date} ({state['booking_date']})" if human_date else state["booking_date"]
+    date_value = state.get("booking_date")
+    human_date = nlp.human_day_phrase(date_value) if date_value else ""
+    time_value = state.get("booking_time")
+    human_time = nlp.human_time_phrase(time_value) if time_value else ""
     msg = random.choice(CONFIRM_TEMPLATES).format(
-        date=human_date,
-        time=nlp.hhmm_to_12h(state["booking_time"]),
+        date=human_date or (date_value or ""),
+        time=human_time or (time_value or ""),
         type=state["booking_appt_type"],
         name=state["caller_name"] or "",
     )
@@ -709,7 +769,8 @@ def _handle_silence(
         "Silence detected",
         extra={"call_sid": state.get("call_sid"), "count": state["silence_count"], "stage": state.get("stage")},
     )
-    if state["silence_count"] == 1:
+    max_reprompts = max(int(settings.practice.max_silence_reprompts or 1), 1)
+    if state["silence_count"] <= max_reprompts:
         prompt = reprompt
         if isinstance(prompt, str):
             if prompt == CLARIFY_PROMPT:
@@ -729,9 +790,17 @@ def _start_booking(state: Dict[str, Any], initial_text: Optional[str] = None) ->
     state["silence_count"] = 0
     state["retries"] = 0
 
+    detected_service = nlp.detect_service(initial_text or "") or state.get("last_service")
     inline_type = extract_appt_type(initial_text or "")
+    if not inline_type and detected_service:
+        inline_type = SERVICE_KEY_TO_APPT.get(detected_service)
     if inline_type:
         state["booking_appt_type"] = inline_type
+        mapped_service = APPT_TO_SERVICE_KEY.get(inline_type)
+        if mapped_service:
+            state["last_service"] = mapped_service
+        elif detected_service:
+            state["last_service"] = detected_service
         state["stage"] = "booking_date"
         logger.info(
             "Booking flow started",
@@ -748,14 +817,17 @@ def _handle_primary_intent(
     state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
 ) -> Response:
     lowered = user_input.lower().strip()
+    if state.get("awaiting_price_service"):
+        return _handle_price_service_follow_up(state, user_input)
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
+    if intent == "prices":
+        service_key = nlp.detect_service(user_input) or state.get("last_service")
+        if service_key:
+            return _respond_with_price_details(state, service_key)
+        return _prompt_for_service_choice(state)
     if intent in INFO_LINES:
         info_text = INFO_LINES[intent]
-        if intent == "prices":
-            service = nlp.infer_service(user_input)
-            if service and service in SERVICE_INFO:
-                info_text = SERVICE_INFO[service]
         message = _with_ack(f"{info_text} {ANYTHING_ELSE_PROMPT}", 0.85)
         payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
         state["intent"] = intent
@@ -781,12 +853,19 @@ def _handle_follow_up(
     state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
 ) -> Response:
     lowered = user_input.lower().strip()
+    if state.get("awaiting_price_service"):
+        return _handle_price_service_follow_up(state, user_input)
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
     if intent == "availability":
         if state.get("intent") != "booking":
             _reset_booking_context(state)
         return _handle_availability_request(state, user_input)
+    if intent == "prices":
+        service_key = nlp.detect_service(user_input) or state.get("last_service")
+        if service_key:
+            return _respond_with_price_details(state, service_key)
+        return _prompt_for_service_choice(state)
     if intent in INFO_LINES or intent == "booking":
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
@@ -964,12 +1043,25 @@ def _handle_booking_name(
     name = _extract_first_name(user_input)
     if not name:
         state["retries"] += 1
-        return _respond_with_gather(state, BOOKING_NAME_REPROMPT, action="/gather-booking")
+        attempts = state.get("name_attempts", 0) + 1
+        state["name_attempts"] = attempts
+        max_attempts = max(int(settings.practice.max_silence_reprompts or 2), 2)
+        if attempts > max_attempts:
+            logger.info(
+                "Name capture failed; ending call",
+                extra={"call_sid": state.get("call_sid"), "attempts": attempts},
+            )
+            state.pop("name_attempts", None)
+            return _respond_with_goodbye(state)
+        prompt = pick_name_clarifier() or BOOKING_NAME_REPROMPT
+        prompt = _with_ack(prompt, 0.7)
+        return _respond_with_gather(state, prompt, action="/gather-booking")
 
     state["caller_name"] = name
     state["stage"] = "booking_confirm"
     state["silence_count"] = 0
     state["retries"] = 0
+    state.pop("name_attempts", None)
     logger.info(
         "Captured caller name",
         extra={"call_sid": state.get("call_sid"), "caller_name": name},
@@ -1090,7 +1182,10 @@ async def gather_intent_route(request: Request) -> Response:
     _remember_caller_line(state, speech_result)
     state["silence_count"] = 0
 
-    intent = parse_intent(speech_result)
+    intent, slots = classify_with_slots(speech_result)
+    service_slot = slots.get("service")
+    if service_slot:
+        state["last_service"] = service_slot
     logger.info(
         "Parsed caller input",
         extra={"call_sid": call_sid, "intent": intent, "stage": state.get("stage")},
@@ -1151,7 +1246,10 @@ async def gather_booking_route(request: Request) -> Response:
     _remember_caller_line(state, speech_result)
     state["silence_count"] = 0
 
-    intent = parse_intent(speech_result)
+    intent, slots = classify_with_slots(speech_result)
+    service_slot = slots.get("service")
+    if service_slot:
+        state["last_service"] = service_slot
 
     if stage == "booking_type":
         return _handle_booking_type(state, speech_result, intent, confidence=confidence)
