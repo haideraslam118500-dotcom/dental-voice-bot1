@@ -12,6 +12,18 @@ def today_date() -> _date:
     return _date.today()
 
 
+def normalise_text(text: Optional[str]) -> str:
+    """Basic normalisation shared across the NLU components."""
+
+    lowered = (text or "").lower().strip()
+    # Common ASR slips
+    lowered = lowered.replace("instruction", "extraction")
+    lowered = lowered.replace("insurrection", "extraction")
+    lowered = lowered.replace("whiteningg", "whitening")
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered
+
+
 def _ordinal(n: int) -> str:
     """Turn 1 into 1st, 2 into 2nd, etc."""
     if 10 <= n % 100 <= 20:
@@ -21,24 +33,38 @@ def _ordinal(n: int) -> str:
     return f"{n}{suffix}"
 
 
-def human_day_phrase(yyyy_mm_dd: str) -> str:
-    """Convert YYYY-MM-DD strings into natural, speech-friendly phrases."""
-    try:
-        target = datetime.strptime(yyyy_mm_dd, "%Y-%m-%d").date()
-    except Exception:
-        return yyyy_mm_dd
+def human_day_phrase(value: str | datetime | _date, today: Optional[datetime] = None) -> str:
+    """Convert a date-like input into a natural, speech-friendly phrase."""
 
-    today = today_date()
-    if target == today:
+    target_dt: Optional[datetime] = None
+    if isinstance(value, datetime):
+        target_dt = value
+    elif isinstance(value, _date):
+        target_dt = datetime.combine(value, datetime.min.time())
+    elif isinstance(value, str):
+        try:
+            target_dt = datetime.strptime(value, "%Y-%m-%d")
+        except Exception:
+            return value
+    if target_dt is None:
+        return str(value)
+
+    today_dt = today or datetime.combine(today_date(), datetime.min.time())
+    delta = (target_dt.date() - today_dt.date()).days
+    dow = calendar.day_name[target_dt.weekday()]
+
+    if delta == 0:
         return "today"
-    if target == today + timedelta(days=1):
+    if delta == 1:
         return "tomorrow"
+    if 2 <= delta <= 6 and target_dt.weekday() >= today_dt.weekday():
+        return f"this {dow}"
+    if 7 <= delta <= 13:
+        ordinal = _ordinal(target_dt.day)
+        month = target_dt.strftime("%B")
+        return f"{dow} the {ordinal} {month}"
 
-    delta = target - today
-    if 0 < delta.days <= 7:
-        return f"this {target.strftime('%A')}"
-
-    return f"{target.strftime('%A')} the {_ordinal(target.day)}"
+    return f"{dow} the {_ordinal(target_dt.day)} {target_dt.strftime('%B')}"
 
 
 WEEKDAYS = {name.lower(): i for i, name in enumerate(calendar.day_name)}
@@ -126,6 +152,12 @@ def hhmm_to_12h(hhmm: str) -> str:
     if minute == 0:
         return f"{display_hour}{suffix}"
     return f"{display_hour}:{minute:02d}{suffix}"
+
+
+def human_time_phrase(hhmm: str) -> str:
+    """Wrapper to describe appointment times in natural speech."""
+
+    return hhmm_to_12h(hhmm)
 
 
 def maybe_prefix_with_filler(
@@ -290,10 +322,12 @@ _SERVICE_SYNONYMS = {
         "check up",
         "check-up",
         "checkup",
+        "check-up",
         "exam",
         "examination",
         "see the dentist",
         "quick look",
+        "review",
     ],
     "hygiene": [
         "hygiene",
@@ -309,6 +343,7 @@ _SERVICE_SYNONYMS = {
         "whitening",
         "teeth whitening",
         "bleaching",
+        "white teeth",
     ],
     "extraction": [
         "extract",
@@ -318,8 +353,31 @@ _SERVICE_SYNONYMS = {
         "tooth removal",
         "remove a tooth",
         "pull my tooth",
+        "tooth remove",
     ],
 }
+
+
+_SERVICE_CANONICAL = {
+    "checkup": "check-up",
+    "hygiene": "hygiene",
+    "whitening": "whitening",
+    "extraction": "extraction",
+}
+
+
+def detect_service(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    inferred = infer_service(text)
+    if inferred:
+        return _SERVICE_CANONICAL.get(inferred, inferred)
+    lowered = normalise_text(text)
+    for canonical, variants in _SERVICE_SYNONYMS.items():
+        for variant in variants:
+            if variant in lowered:
+                return _SERVICE_CANONICAL.get(canonical, canonical)
+    return None
 
 
 def infer_service(text: str) -> Optional[str]:
