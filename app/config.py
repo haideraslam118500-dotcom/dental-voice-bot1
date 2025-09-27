@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 PRACTICE_PROFILE = os.getenv("PRACTICE_PROFILE", "dental").strip().lower()
 _profiled_config = ROOT / "config" / f"practice_{PRACTICE_PROFILE}.yml"
-PRACTICE_CONFIG_PATH = _profiled_config if _profiled_config.exists() else ROOT / "config" / "practice.yml"
+DEFAULT_CONFIG_PATH = _profiled_config if _profiled_config.exists() else ROOT / "config" / "practice.yml"
+TENANTS_PATH = ROOT / "config" / "tenants.yml"
 FALLBACK_VOICE = "alice"
 FALLBACK_LANGUAGE = "en-GB"
 
@@ -48,7 +49,35 @@ class PracticeConfig:
     max_silence_reprompts: int
 
 
-def _load_practice_config() -> PracticeConfig:
+def _load_yaml(path: Path) -> dict[str, Any]:
+    try:
+        loaded = safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError as exc:  # pragma: no cover - configuration read errors are rare
+        raise RuntimeError(f"Unable to read configuration file {path}: {exc}") from exc
+    except YAMLError as exc:  # pragma: no cover - invalid YAML should crash early
+        raise RuntimeError(f"Invalid YAML in {path}: {exc}") from exc
+    if loaded and not isinstance(loaded, dict):
+        raise RuntimeError(f"Invalid YAML in {path}: top-level document must be a mapping")
+    return loaded
+
+
+def _load_tenant_map() -> dict[str, Any]:
+    if not TENANTS_PATH.exists():
+        return {}
+    data = _load_yaml(TENANTS_PATH)
+    tenants = data.get("tenants", {})
+    if not isinstance(tenants, dict):
+        return {}
+    return tenants
+
+
+def _config_path_for_profile(profile: str | None) -> Path:
+    desired = (profile or "").strip().lower() or PRACTICE_PROFILE
+    preferred = ROOT / "config" / f"practice_{desired}.yml"
+    return preferred if preferred.exists() else DEFAULT_CONFIG_PATH
+
+
+def _load_practice_config(path: Optional[Path] = None) -> PracticeConfig:
     defaults: dict[str, Any] = {
         "practice_name": "Oak Dental",
         "voice": "Polly.Amy",
@@ -120,17 +149,9 @@ def _load_practice_config() -> PracticeConfig:
         "max_silence_reprompts": 2,
     }
 
-    if PRACTICE_CONFIG_PATH.exists():
-        try:
-            loaded = safe_load(PRACTICE_CONFIG_PATH.read_text(encoding="utf-8")) or {}
-        except OSError as exc:  # pragma: no cover - configuration read errors are rare
-            raise RuntimeError(f"Unable to read practice configuration: {exc}") from exc
-        except YAMLError as exc:  # pragma: no cover - invalid YAML should crash early
-            raise RuntimeError(f"Invalid YAML in {PRACTICE_CONFIG_PATH}: {exc}") from exc
-        if not isinstance(loaded, dict):
-            raise RuntimeError(
-                f"Invalid YAML in {PRACTICE_CONFIG_PATH}: top-level document must be a mapping"
-            )
+    config_path = path or DEFAULT_CONFIG_PATH
+    if config_path.exists():
+        loaded = _load_yaml(config_path)
         defaults.update({k: v for k, v in loaded.items() if v is not None})
 
     raw_prices = defaults.get("prices", "")
@@ -178,6 +199,7 @@ class Settings:
     language: str
     fallback_voice: str
     practice: PracticeConfig
+    profile: str
 
     def __post_init__(self) -> None:
         if self.verify_twilio_signatures and not self.twilio_auth_token:
@@ -186,9 +208,11 @@ class Settings:
             )
 
 
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    practice = _load_practice_config()
+def load_practice_config_for_profile(profile: str | None) -> PracticeConfig:
+    return _load_practice_config(_config_path_for_profile(profile))
+
+
+def _build_settings(practice: PracticeConfig, profile: str) -> Settings:
     env_voice = os.getenv("TTS_VOICE")
     env_lang = os.getenv("TTS_LANG")
 
@@ -205,7 +229,34 @@ def get_settings() -> Settings:
         language=language or FALLBACK_LANGUAGE,
         fallback_voice=FALLBACK_VOICE,
         practice=practice,
+        profile=profile,
     )
 
 
-__all__ = ["PracticeConfig", "Settings", "get_settings"]
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    practice = _load_practice_config()
+    return _build_settings(practice, PRACTICE_PROFILE)
+
+
+def get_settings_for_to_number(to_number: str | None) -> Settings:
+    tenants = _load_tenant_map()
+    number = (to_number or "").strip()
+    if number and number in tenants:
+        tenant_data = tenants[number] or {}
+        profile = str(tenant_data.get("profile") or PRACTICE_PROFILE).strip().lower()
+        practice = load_practice_config_for_profile(profile)
+        override_name = tenant_data.get("practice_name")
+        if override_name:
+            practice.practice_name = str(override_name)
+        return _build_settings(practice, profile)
+    return get_settings()
+
+
+__all__ = [
+    "PracticeConfig",
+    "Settings",
+    "get_settings",
+    "get_settings_for_to_number",
+    "load_practice_config_for_profile",
+]

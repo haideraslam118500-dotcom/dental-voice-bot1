@@ -109,6 +109,14 @@ Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the T
 3. Under **Status Callback URL** set the webhook to `https://<your-ngrok-domain>/status` and choose **HTTP POST**.
 4. Save changes and place a test call through the number.
 
+## Multi-tenant (two numbers, one server)
+Point both Twilio numbers to the same webhook:
+* Voice (POST): `https://YOUR-NGROK.ngrok-free.app/twilio/voice`
+* Status (POST): `https://YOUR-NGROK.ngrok-free.app/status`
+Numbers are mapped in `config/tenants.yml`. Optional per-practice schedules:
+`data/schedule_dental.csv`, `data/schedule_mechanic.csv`. Otherwise `data/schedule.csv` is used.
+Debug: `GET /debug/which-practice?to=+441234567890`
+
 ## Call flow at a glance
 
 - Greeting (played once): “Hi, thanks for calling our dental practice. I’m your AI receptionist, here to help with general information and booking appointments. Please note, I’m not a medical professional. How can I help you today? You can ask about our opening hours, our address, our prices, or say you’d like to book an appointment.”

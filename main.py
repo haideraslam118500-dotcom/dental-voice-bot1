@@ -6,7 +6,6 @@ import re
 import textwrap
 from collections import deque
 from datetime import datetime, timezone
-from itertools import cycle
 from threading import Lock
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
@@ -15,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from twilio.twiml.voice_response import VoiceResponse
 from xml.etree.ElementTree import ParseError, fromstring
 
-from app.config import get_settings
+from app.config import PracticeConfig, Settings, get_settings, get_settings_for_to_number
 from app import nlp, schedule
 import app.dialogue as dialogue_module
 from app.dialogue import (
@@ -108,18 +107,7 @@ GARAGE_INFO_INTENTS = {
     "recovery",
 }
 
-INFO_LINES = {
-    "hours": settings.practice.hours,
-    "address": settings.practice.address,
-    "prices": settings.practice.prices,
-}
-
-SERVICE_INFO: Dict[str, str] = {}
-for _service_key, _service_value in (settings.practice.service_prices or {}).items():
-    lowered = _service_key.lower()
-    SERVICE_INFO[lowered] = _service_value
-    SERVICE_INFO[lowered.replace("-", "")] = _service_value
-    SERVICE_INFO[lowered.replace(" ", "")] = _service_value
+BASIC_INFO_INTENTS = {"hours", "address", "prices"}
 
 SERVICE_KEY_TO_APPT = {
     "check-up": "Check-up",
@@ -138,7 +126,7 @@ GOODBYES = list(
         "Alright, appreciate the call. Goodbye.",
     ]
 )
-_goodbye_cycle = cycle(GOODBYES)
+_goodbye_cycle = None
 
 NEGATIVE_RESPONSES = {
     "no",
@@ -263,11 +251,19 @@ CALLS = _call_states
 app = FastAPI()
 
 from app.debug import router as debug_router
+from app.debug_tenant import router as debug_tenant_router
 
 app.include_router(debug_router)
+app.include_router(debug_tenant_router, tags=["debug"])
 
 validator = RequestValidator(settings.twilio_auth_token) if settings.twilio_auth_token else None
-protected_paths = ("/voice", "/gather-intent", "/gather-booking", "/status")
+protected_paths = (
+    "/voice",
+    "/twilio/voice",
+    "/gather-intent",
+    "/gather-booking",
+    "/status",
+)
 app.add_middleware(
     TwilioRequestValidationMiddleware,
     validator=validator,
@@ -336,25 +332,172 @@ def _pop_state(call_sid: str) -> Optional[Dict[str, Any]]:
         return _call_states.pop(call_sid, None)
 
 
-def _next_goodbye() -> str:
-    return next(_goodbye_cycle)
+def _state_settings(state: Dict[str, Any]) -> Settings:
+    override = state.get("settings")
+    if isinstance(override, Settings):
+        return override
+    return settings
+
+
+def _state_practice(state: Dict[str, Any]) -> PracticeConfig:
+    return _state_settings(state).practice
+
+
+def _state_voice(state: Dict[str, Any]) -> str:
+    voice = (state.get("voice") or "").strip()
+    if voice:
+        return voice
+    return (_state_settings(state).voice or VOICE).strip()
+
+
+def _state_language(state: Dict[str, Any]) -> str:
+    language = (state.get("language") or "").strip()
+    if language:
+        return language
+    return (_state_settings(state).language or LANGUAGE).strip()
+
+
+def _state_openings(state: Dict[str, Any]) -> list[str]:
+    practice = _state_practice(state)
+    options = list(practice.openings or [])
+    if options:
+        return options
+    return list(GREETINGS)
+
+
+def _state_thinking_fillers(state: Dict[str, Any]) -> list[str]:
+    practice = _state_practice(state)
+    fillers = list(practice.thinking_fillers or [])
+    if fillers:
+        return fillers
+    return list(THINKING_FILLERS)
+
+
+def _state_backchannels(state: Dict[str, Any]) -> list[str]:
+    practice = _state_practice(state)
+    backchannels = list(practice.backchannels or [])
+    if backchannels:
+        return backchannels
+    return list(dialogue_module.HOLDERS)
+
+
+def _state_goodbyes(state: Dict[str, Any]) -> list[str]:
+    practice = _state_practice(state)
+    closings = list(practice.closings or [])
+    if closings:
+        return closings
+    return GOODBYES
+
+
+def _state_info_lines(state: Dict[str, Any]) -> Dict[str, str]:
+    cached = state.get("_info_lines")
+    if isinstance(cached, dict):
+        return cached
+    practice = _state_practice(state)
+    info = {
+        "hours": str(practice.hours or ""),
+        "address": str(practice.address or ""),
+        "prices": str(practice.prices or ""),
+    }
+    state["_info_lines"] = info
+    return info
+
+
+def _state_service_info(state: Dict[str, Any]) -> Dict[str, str]:
+    cached = state.get("_service_info")
+    if isinstance(cached, dict):
+        return cached
+    practice = _state_practice(state)
+    mapping: Dict[str, str] = {}
+    for key, value in (practice.service_prices or {}).items():
+        lowered = str(key or "").lower()
+        if not lowered:
+            continue
+        str_value = str(value or "")
+        mapping[lowered] = str_value
+        mapping[lowered.replace("-", "")] = str_value
+        mapping[lowered.replace(" ", "")] = str_value
+    state["_service_info"] = mapping
+    return mapping
+
+
+def _state_consent_line(state: Dict[str, Any]) -> str:
+    cached = state.get("_consent_line")
+    if isinstance(cached, str):
+        return cached
+    practice = _state_practice(state)
+    consent_line = (
+        (practice.consent_lines or {}).get("short_booking")
+        if isinstance(practice.consent_lines, dict)
+        else None
+    )
+    consent_line = str(consent_line or CONSENT_LINE)
+    state["_consent_line"] = consent_line
+    return consent_line
+
+
+def _state_profile(state: Dict[str, Any]) -> str:
+    profile = (state.get("profile") or "").strip().lower()
+    if profile:
+        return profile
+    return _state_settings(state).profile
+
+
+def _maybe_prefix_with_thinking(state: Dict[str, Any], text: PromptPayload, *, chance: float) -> PromptPayload:
+    fillers = _state_thinking_fillers(state)
+    return nlp.maybe_prefix_with_filler(text, fillers, chance=chance)
+
+
+def _next_opening_line(state: Dict[str, Any]) -> str:
+    options = _state_openings(state)
+    if not options:
+        return "Hello, how can I help today?"
+    idx = int(state.get("_opening_index", 0))
+    greeting = options[idx % len(options)]
+    state["_opening_index"] = idx + 1
+    return greeting
+
+
+def _next_goodbye(state: Dict[str, Any]) -> str:
+    global _goodbye_cycle
+    if _goodbye_cycle is not None:
+        return next(_goodbye_cycle)
+    closings = _state_goodbyes(state)
+    if not closings:
+        return "Thanks for calling. Goodbye."
+    idx = int(state.get("_goodbye_index", 0))
+    message = closings[idx % len(closings)]
+    state["_goodbye_index"] = idx + 1
+    return message
+
+
+def _apply_call_settings(state: Dict[str, Any], call_settings: Settings) -> None:
+    previous = state.get("settings")
+    same_profile = isinstance(previous, Settings) and previous.profile == call_settings.profile
+    state["settings"] = call_settings
+    state["profile"] = call_settings.profile
+    state["voice"] = call_settings.voice
+    state["language"] = call_settings.language
+    for key in ("_info_lines", "_service_info", "_consent_line"):
+        state.pop(key, None)
+    if not same_profile:
+        # Reset rotating indices so new openings/closings start fresh
+        state.pop("_opening_index", None)
+        state.pop("_goodbye_index", None)
+    metadata = state.setdefault("metadata", {})
+    metadata["tenant_profile"] = call_settings.profile
+
+
+def _ensure_state_settings(state: Dict[str, Any], to_number: Optional[str]) -> Settings:
+    call_settings = get_settings_for_to_number(to_number)
+    _apply_call_settings(state, call_settings)
+    return call_settings
 
 
 def _twiml_response(twiml: str) -> Response:
     return Response(content=twiml, media_type="application/xml")
-
-
-def _next_opening_line() -> str:
-    with _greeting_lock:
-        if not _greeting_queue:
-            options = list(GREETINGS)
-            random.shuffle(options)
-            _greeting_queue.extend(options)
-        return _greeting_queue.popleft()
-
-
 def _build_opening_prompt(state: Dict[str, Any]) -> str:
-    greeting = state.get("opening_line") or _next_opening_line()
+    greeting = state.get("opening_line") or _next_opening_line(state)
     state.setdefault("opening_line", greeting)
     parts = [greeting]
     if not state.get("disclaimer_said") and DISCLAIMER_LINE:
@@ -604,21 +747,26 @@ def _with_ack(text: str, chance: float = 0.7) -> str:
     return f"{holder} {text}"
 
 
-def _lookup_service_price(service_key: Optional[str]) -> Optional[str]:
+def _lookup_service_price(state: Dict[str, Any], service_key: Optional[str]) -> Optional[str]:
     if not service_key:
         return None
     lowered = service_key.lower()
-    for key in {lowered, lowered.replace("-", ""), lowered.replace(" ", "")}:
-        if key in SERVICE_INFO:
-            return SERVICE_INFO[key]
-    return None
+    service_info = _state_service_info(state)
+    if lowered in service_info:
+        return service_info[lowered]
+    key_no_dash = lowered.replace("-", "")
+    if key_no_dash in service_info:
+        return service_info[key_no_dash]
+    key_no_space = lowered.replace(" ", "")
+    return service_info.get(key_no_space)
 
 
 def _respond_with_price_details(state: Dict[str, Any], service_key: str) -> Response:
-    info_text = _lookup_service_price(service_key) or INFO_LINES["prices"]
+    info_lines = _state_info_lines(state)
+    info_text = _lookup_service_price(state, service_key) or info_lines.get("prices", "")
     follow_up = "Would you like to book that?"
     message = f"{info_text} {follow_up}".strip()
-    payload = nlp.maybe_prefix_with_filler(_with_ack(message, 0.85), THINKING_FILLERS, chance=0.4)
+    payload = _maybe_prefix_with_thinking(state, _with_ack(message, 0.85), chance=0.4)
     state["intent"] = "prices"
     state["stage"] = "follow_up"
     state["retries"] = 0
@@ -664,12 +812,16 @@ def _respond_with_gather(
     hints: Optional[str] = None,
 ) -> Response:
     _remember_agent_line(state, _prompt_to_text(prompt))
-    timeout = settings.practice.no_speech_timeout or 5
+    practice = _state_practice(state)
+    timeout = practice.no_speech_timeout or 5
+    voice = _state_voice(state)
+    language = _state_language(state)
+    _set_active_voice(voice)
     twiml = create_gather_twiml(
         prompt,
         action=action,
         voice=_get_active_voice(),
-        language=LANGUAGE,
+        language=language,
         hints=hints,
         timeout=int(timeout),
         call_sid=state.get("call_sid"),
@@ -678,7 +830,7 @@ def _respond_with_gather(
 
 
 def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
-    message = _next_goodbye()
+    message = _next_goodbye(state)
     _remember_agent_line(state, message)
     state["stage"] = "completed"
     state["ending"] = True
@@ -693,11 +845,14 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
         </speak>
         """
     ).strip()
+    voice = _state_voice(state)
+    language = _state_language(state)
+    _set_active_voice(voice)
     return _twiml_response(
         create_goodbye_twiml(
             [("ssml", (message, ssml))],
             voice=_get_active_voice(),
-            language=LANGUAGE,
+            language=language,
             call_sid=state.get("call_sid"),
         )
     )
@@ -745,14 +900,14 @@ def _format_times(slots: Sequence[str]) -> str:
     return ", ".join(spoken[:-1]) + f", or {spoken[-1]}"
 
 
-def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
+def _booking_time_prompt(state: Dict[str, Any], date: str, slots: Sequence[str]) -> PromptPayload:
     joined = _format_times(list(slots))
     if not joined:
         message = _with_ack(
             "I couldn't see any free times on that day. Would another day work?",
             0.7,
         )
-        return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.5)
+        return _maybe_prefix_with_thinking(state, message, chance=0.5)
     spoken_times = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
     if not spoken_times:
         pretty_day = nlp.human_day_phrase(date)
@@ -760,7 +915,7 @@ def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
             f"On {date}, {pretty_day}, we have {joined}. Which time works for you?",
             0.9,
         )
-        return nlp.maybe_prefix_with_filler(base, THINKING_FILLERS, chance=0.8)
+        return _maybe_prefix_with_thinking(state, base, chance=0.8)
     pretty_day = nlp.human_day_phrase(date)
     times_spoken = ", ".join(spoken_times)
     detailed_times = ", ".join(
@@ -786,7 +941,7 @@ def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
     return [("ssml", (plain_text, ssml))]
 
 
-def _booking_time_reprompt(slots: Sequence[str]) -> PromptPayload:
+def _booking_time_reprompt(state: Dict[str, Any], slots: Sequence[str]) -> PromptPayload:
     cleaned = [f"{nlp.human_time_phrase(slot)} at {slot}" for slot in slots if slot]
     if cleaned:
         preview = ", ".join(cleaned[:3])
@@ -797,7 +952,7 @@ def _booking_time_reprompt(slots: Sequence[str]) -> PromptPayload:
     if clarifier:
         prompt = f"{clarifier} {prompt}"
     prompt = _with_ack(prompt, 0.7)
-    return nlp.maybe_prefix_with_filler(prompt, THINKING_FILLERS, chance=0.5)
+    return _maybe_prefix_with_thinking(state, prompt, chance=0.5)
 
 
 def _booking_name_prompt(time: str) -> str:
@@ -825,7 +980,7 @@ def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
         f"{connector} {when_text}?"
     )
     message = _with_ack(message, 0.7)
-    return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.6)
+    return _maybe_prefix_with_thinking(state, message, chance=0.6)
 
 
 def _booking_confirmed_message(state: Dict[str, Any]) -> PromptPayload:
@@ -875,11 +1030,13 @@ def _booking_confirmed_message(state: Dict[str, Any]) -> PromptPayload:
     parts: list[PromptSegment] = []
     parts.append(("ssml", (plain_text, ssml)))
     if not state.get("consent_said"):
-        snippet = consent_snippet(settings.practice)
+        practice = _state_practice(state)
+        snippet = consent_snippet(practice)
         if snippet:
             parts.append(("say", snippet))
-        if CONSENT_LINE:
-            parts.append(("say", CONSENT_LINE))
+        consent_line = _state_consent_line(state)
+        if consent_line:
+            parts.append(("say", consent_line))
         state["consent_said"] = True
     parts.append(("say", _with_ack(ANYTHING_ELSE_PROMPT, 0.6)))
     return parts
@@ -897,13 +1054,21 @@ def _reset_booking_context(state: Dict[str, Any]) -> None:
     state["booking_suggested_slot"] = None
 
 
-def _available_slots_for_date(date: str, limit: int = 6) -> list[str]:
-    slots = schedule.list_available(date=date, limit=limit)
+def _available_slots_for_date(state: Dict[str, Any], date: str, limit: int = 6) -> list[str]:
+    profile = _state_profile(state)
+    try:
+        slots = schedule.list_available(date=date, limit=limit, profile=profile)
+    except TypeError:
+        slots = schedule.list_available(date=date, limit=limit)
     return [slot["start_time"] for slot in slots]
 
 
-def _next_available_slot() -> Optional[dict]:
-    return schedule.find_next_available()
+def _next_available_slot(state: Dict[str, Any]) -> Optional[dict]:
+    profile = _state_profile(state)
+    try:
+        return schedule.find_next_available(profile=profile)
+    except TypeError:
+        return schedule.find_next_available()
 
 
 def _match_appointment_type(text: str) -> Optional[str]:
@@ -930,19 +1095,19 @@ def _handle_availability_request(state: Dict[str, Any], user_input: str) -> Resp
         state["retries"] = 0
         state["booking_date"] = None
         state["booking_available_times"] = []
-        prompt = nlp.maybe_prefix_with_filler(
+        prompt = _maybe_prefix_with_thinking(
+            state,
             _with_ack(
                 "Which day are you thinking of? You can say tomorrow or a weekday like Wednesday.",
                 0.85,
             ),
-            THINKING_FILLERS,
             chance=0.6,
         )
         return _respond_with_gather(state, prompt, action="/gather-booking")
 
-    slots = _available_slots_for_date(date)
+    slots = _available_slots_for_date(state, date)
     if not slots:
-        nxt = _next_available_slot()
+        nxt = _next_available_slot(state)
         if nxt:
             message = _with_ack(
                 f"That day looks full. The next available is {describe_day(nxt['date'])} at {nlp.hhmm_to_12h(nxt['start_time'])}. Would you like that?",
@@ -957,7 +1122,7 @@ def _handle_availability_request(state: Dict[str, Any], user_input: str) -> Resp
         state["retries"] = 0
         return _respond_with_gather(
             state,
-            nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.6),
+            _maybe_prefix_with_thinking(state, message, chance=0.6),
             action="/gather-booking",
         )
 
@@ -967,7 +1132,7 @@ def _handle_availability_request(state: Dict[str, Any], user_input: str) -> Resp
     state["stage"] = "booking_time"
     state["silence_count"] = 0
     state["retries"] = 0
-    prompt = _booking_time_prompt(date, slots)
+    prompt = _booking_time_prompt(state, date, slots)
     return _respond_with_gather(state, prompt, action="/gather-booking")
 
 
@@ -1005,7 +1170,8 @@ def _handle_silence(
         "Silence detected",
         extra={"call_sid": state.get("call_sid"), "count": state["silence_count"], "stage": state.get("stage")},
     )
-    max_reprompts = max(int(settings.practice.max_silence_reprompts or 1), 1)
+    practice = _state_practice(state)
+    max_reprompts = max(int(practice.max_silence_reprompts or 1), 1)
     if state["silence_count"] <= max_reprompts:
         prompt = reprompt
         if isinstance(prompt, str):
@@ -1052,15 +1218,16 @@ def _start_booking(state: Dict[str, Any], initial_text: Optional[str] = None) ->
 def _handle_primary_intent(
     state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
 ) -> Response:
-    if intent == "quote" and not settings.practice.price_items:
+    practice = _state_practice(state)
+    if intent == "quote" and not practice.price_items:
         intent = "prices"
     lowered = user_input.lower().strip()
     if state.get("awaiting_price_service"):
         return _handle_price_service_follow_up(state, user_input)
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
-    if intent in GARAGE_INFO_INTENTS and settings.practice.price_items:
-        info_text = info_for_intent(settings.practice, intent).strip()
+    if intent in GARAGE_INFO_INTENTS and practice.price_items:
+        info_text = info_for_intent(practice, intent).strip()
         if info_text:
             follow_up = (
                 "Would you like me to arrange that?"
@@ -1068,7 +1235,7 @@ def _handle_primary_intent(
                 else "Would you like to book that in?"
             )
             message = _with_ack(f"{info_text} {follow_up}".strip(), 0.85)
-            payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
+            payload = _maybe_prefix_with_thinking(state, message, chance=0.4)
             state["intent"] = intent
             state["stage"] = "follow_up"
             state["retries"] = 0
@@ -1083,10 +1250,11 @@ def _handle_primary_intent(
         if service_key:
             return _respond_with_price_details(state, service_key)
         return _prompt_for_service_choice(state)
-    if intent in INFO_LINES:
-        info_text = INFO_LINES[intent]
+    if intent in BASIC_INFO_INTENTS:
+        info_lines = _state_info_lines(state)
+        info_text = info_lines.get(intent, "")
         message = _with_ack(f"{info_text} {ANYTHING_ELSE_PROMPT}", 0.85)
-        payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
+        payload = _maybe_prefix_with_thinking(state, message, chance=0.4)
         state["intent"] = intent
         state["stage"] = "follow_up"
         state["retries"] = 0
@@ -1109,15 +1277,16 @@ def _handle_primary_intent(
 def _handle_follow_up(
     state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
 ) -> Response:
-    if intent == "quote" and not settings.practice.price_items:
+    practice = _state_practice(state)
+    if intent == "quote" and not practice.price_items:
         intent = "prices"
     lowered = user_input.lower().strip()
     if state.get("awaiting_price_service"):
         return _handle_price_service_follow_up(state, user_input)
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
-    if intent in GARAGE_INFO_INTENTS and settings.practice.price_items:
-        info_text = info_for_intent(settings.practice, intent).strip()
+    if intent in GARAGE_INFO_INTENTS and practice.price_items:
+        info_text = info_for_intent(practice, intent).strip()
         if info_text:
             follow_up = (
                 "Would you like me to arrange that?"
@@ -1125,7 +1294,7 @@ def _handle_follow_up(
                 else "Would you like to book that in?"
             )
             message = _with_ack(f"{info_text} {follow_up}".strip(), 0.85)
-            payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
+            payload = _maybe_prefix_with_thinking(state, message, chance=0.4)
             state["intent"] = intent
             state["stage"] = "follow_up"
             state["retries"] = 0
@@ -1144,7 +1313,7 @@ def _handle_follow_up(
         if service_key:
             return _respond_with_price_details(state, service_key)
         return _prompt_for_service_choice(state)
-    if intent in INFO_LINES or intent == "booking":
+    if intent in BASIC_INFO_INTENTS or intent == "booking":
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "affirm" or lowered in POSITIVE_RESPONSES:
@@ -1160,7 +1329,7 @@ def _handle_booking_type(
 ) -> Response:
     if intent == "goodbye":
         return _respond_with_goodbye(state)
-    if intent in INFO_LINES:
+    if intent in BASIC_INFO_INTENTS:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
@@ -1191,7 +1360,7 @@ def _handle_booking_date(
     lowered = user_input.lower().strip()
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
-    if intent in INFO_LINES:
+    if intent in BASIC_INFO_INTENTS:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
@@ -1214,13 +1383,13 @@ def _handle_booking_date(
         return _respond_with_gather(state, _booking_date_reprompt(), action="/gather-booking")
 
     state["booking_date"] = parsed
-    slots = _available_slots_for_date(parsed)
+    slots = _available_slots_for_date(state, parsed)
     state["booking_available_times"] = slots
     state["booking_suggested_slot"] = None
     state["silence_count"] = 0
     state["retries"] = 0
     if not slots:
-        nxt = _next_available_slot()
+        nxt = _next_available_slot(state)
         if nxt:
             state["booking_suggested_slot"] = nxt
             message = (
@@ -1231,7 +1400,7 @@ def _handle_booking_date(
         return _respond_with_gather(state, message, action="/gather-booking")
 
     state["stage"] = "booking_time"
-    prompt = _booking_time_prompt(parsed, slots)
+    prompt = _booking_time_prompt(state, parsed, slots)
     return _respond_with_gather(state, prompt, action="/gather-booking")
 
 
@@ -1240,7 +1409,7 @@ def _handle_booking_time(
 ) -> Response:
     if intent == "goodbye":
         return _respond_with_goodbye(state)
-    if intent in INFO_LINES:
+    if intent in BASIC_INFO_INTENTS:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
@@ -1248,7 +1417,7 @@ def _handle_booking_time(
 
     available_list = list(state.get("booking_available_times") or [])
     if state.get("booking_date") and not available_list:
-        available_list = _available_slots_for_date(state["booking_date"])
+        available_list = _available_slots_for_date(state, state["booking_date"])
         state["booking_available_times"] = available_list
     avail_set = set(available_list)
 
@@ -1275,7 +1444,7 @@ def _handle_booking_time(
         state["retries"] += 1
         return _respond_with_gather(
             state,
-            _booking_time_reprompt(available_list),
+            _booking_time_reprompt(state, available_list),
             action="/gather-booking",
         )
 
@@ -1283,7 +1452,7 @@ def _handle_booking_time(
         state["retries"] += 1
         return _respond_with_gather(
             state,
-            _booking_time_reprompt(available_list),
+            _booking_time_reprompt(state, available_list),
             action="/gather-booking",
         )
 
@@ -1312,7 +1481,7 @@ def _handle_booking_name(
 ) -> Response:
     if intent == "goodbye":
         return _respond_with_goodbye(state)
-    if intent in INFO_LINES:
+    if intent in BASIC_INFO_INTENTS:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
@@ -1323,7 +1492,8 @@ def _handle_booking_name(
         state["retries"] += 1
         attempts = state.get("name_attempts", 0) + 1
         state["name_attempts"] = attempts
-        max_attempts = max(int(settings.practice.max_silence_reprompts or 2), 2)
+        practice = _state_practice(state)
+        max_attempts = max(int(practice.max_silence_reprompts or 2), 2)
         if attempts > max_attempts:
             logger.info(
                 "Name capture failed; ending call",
@@ -1354,7 +1524,7 @@ def _handle_booking_confirmation(
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         state["stage"] = "follow_up"
         return _respond_with_gather(state, BOOKING_DECLINED_PROMPT)
-    if intent in INFO_LINES:
+    if intent in BASIC_INFO_INTENTS:
         state["stage"] = "intent"
         return _handle_primary_intent(state, intent, user_input, confidence=confidence)
     if intent == "availability":
@@ -1368,7 +1538,11 @@ def _handle_booking_confirmation(
         if not (date and time and name and appt_type):
             state["stage"] = "booking_type"
             return _respond_with_gather(state, _booking_type_prompt(), action="/gather-booking")
-        ok = schedule.reserve_slot(date, time, name, appt_type)
+        profile = _state_profile(state)
+        try:
+            ok = schedule.reserve_slot(date, time, name, appt_type, profile=profile)
+        except TypeError:
+            ok = schedule.reserve_slot(date, time, name, appt_type)
         if ok:
             state["requested_time"] = f"{date} {time}"
             state["booking_logged"] = True
@@ -1377,7 +1551,7 @@ def _handle_booking_confirmation(
             return _respond_with_gather(state, _booking_confirmed_message(state))
         state["stage"] = "booking_date"
         state["booking_time"] = None
-        state["booking_available_times"] = _available_slots_for_date(date) if date else []
+        state["booking_available_times"] = _available_slots_for_date(state, date) if date else []
         return _respond_with_gather(
             state,
             "Sorry, that slot was just taken. Would you like to pick another time?",
@@ -1405,6 +1579,7 @@ def _missing_call_sid_response() -> Response:
 
 
 @app.post("/voice")
+@app.api_route("/twilio/voice", methods=["GET", "POST"])
 async def voice_webhook(request: Request) -> Response:
     form = await request.form()
     call_sid = form.get("CallSid")
@@ -1414,6 +1589,27 @@ async def voice_webhook(request: Request) -> Response:
 
     state = _get_state(call_sid, form)
     assert state is not None
+
+    query_params = getattr(request, "query_params", None)
+    headers = getattr(request, "headers", None)
+    to_number = (form.get("To") if form else None)
+    if not to_number and query_params:
+        try:
+            to_number = query_params.get("To")
+        except AttributeError:
+            to_number = None
+    if not to_number and headers:
+        try:
+            to_number = headers.get("X-Twilio-To")
+        except AttributeError:
+            to_number = None
+    call_settings = _ensure_state_settings(state, to_number)
+    metadata = state.setdefault("metadata", {})
+    if to_number and not metadata.get("to"):
+        metadata["to"] = to_number
+
+    if state.get("voice"):
+        _set_active_voice(state["voice"])
 
     if state.get("ending") or state.get("stage") == "completed":
         return _hangup_only_response()
@@ -1427,7 +1623,14 @@ async def voice_webhook(request: Request) -> Response:
         state["stage"] = "intent"
         state["silence_count"] = 0
         state["retries"] = 0
-        logger.info("Incoming call", extra={"call_sid": call_sid})
+        logger.info(
+            "Incoming call",
+            extra={
+                "call_sid": call_sid,
+                "tenant_profile": call_settings.profile,
+                "practice_name": call_settings.practice.practice_name,
+            },
+        )
         return _respond_with_gather(state, _build_opening_prompt(state))
 
     return _respond_with_gather(state, CLARIFY_PROMPT)
@@ -1443,6 +1646,14 @@ async def gather_intent_route(request: Request) -> Response:
 
     state = _get_state(call_sid, form)
     assert state is not None
+
+    to_number = (
+        (form.get("To") if form else None)
+        or state.get("metadata", {}).get("to")
+    )
+    _ensure_state_settings(state, to_number)
+    if state.get("voice"):
+        _set_active_voice(state["voice"])
 
     if state.get("ending") or state.get("stage") == "completed":
         return _hangup_only_response()
@@ -1486,6 +1697,14 @@ async def gather_booking_route(request: Request) -> Response:
     state = _get_state(call_sid, form)
     assert state is not None
 
+    to_number = (
+        (form.get("To") if form else None)
+        or state.get("metadata", {}).get("to")
+    )
+    _ensure_state_settings(state, to_number)
+    if state.get("voice"):
+        _set_active_voice(state["voice"])
+
     if state.get("ending") or state.get("stage") == "completed":
         return _hangup_only_response()
 
@@ -1514,7 +1733,7 @@ async def gather_booking_route(request: Request) -> Response:
         if stage == "booking_time":
             return _handle_silence(
                 state,
-                reprompt=_booking_time_reprompt(state.get("booking_available_times", [])),
+                reprompt=_booking_time_reprompt(state, state.get("booking_available_times", [])),
                 action="/gather-booking",
             )
         if stage == "booking_confirm":
