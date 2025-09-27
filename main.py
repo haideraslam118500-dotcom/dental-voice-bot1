@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import re
+import textwrap
 from collections import deque
 from datetime import datetime, timezone
 from itertools import cycle
@@ -12,11 +13,11 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Unio
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from twilio.twiml.voice_response import VoiceResponse
+from xml.etree.ElementTree import ParseError, fromstring
 
 from app.config import get_settings
 from app import nlp, schedule
 from app.dialogue import (
-    CONFIRM_TEMPLATES,
     DISCLAIMER_LINE,
     GREETINGS,
     THINKING_FILLERS,
@@ -103,9 +104,9 @@ SERVICE_KEY_TO_APPT = {
 APPT_TO_SERVICE_KEY = {v: k for k, v in SERVICE_KEY_TO_APPT.items()}
 
 GOODBYES = [
-    "Okay, thanks for calling. Have a lovely day. Goodbye.",
-    "Alright, appreciate the call. Take care — goodbye.",
-    "Thanks for calling Oak Dental. Bye for now.",
+    "Okay, have a lovely day. Goodbye.",
+    "Thanks for calling. Take care, goodbye.",
+    "Alright, appreciate the call. Goodbye.",
 ]
 _goodbye_cycle = cycle(GOODBYES)
 
@@ -151,7 +152,7 @@ ANYTIME_PHRASES = {
 }
 
 
-PromptSegment = Tuple[str, str]
+PromptSegment = Tuple[str, Union[str, Tuple[str, str]]]
 PromptPayload = Union[str, Sequence[PromptSegment]]
 
 
@@ -173,9 +174,9 @@ def _say_with_voice(
     preferred_voice: str,
     language: str,
     call_sid: Optional[str] = None,
-) -> None:
+) -> Any:
     try:
-        say_callable(message, voice=preferred_voice, language=language)
+        return say_callable(message, voice=preferred_voice, language=language)
     except Exception:  # pragma: no cover - depends on Twilio SDK behaviour
         fallback_voice = settings.fallback_voice or "alice"
         if fallback_voice == preferred_voice:
@@ -193,7 +194,7 @@ def _say_with_voice(
                 exc_info=True,
             )
             _voice_fallback_notified = True
-        say_callable(message, voice=fallback_voice, language=language)
+        return say_callable(message, voice=fallback_voice, language=language)
 
 
 def _say_segments(
@@ -376,26 +377,62 @@ def create_gather_twiml(
                     language=language,
                     call_sid=call_sid,
                 )
+            elif kind == "ssml":
+                plain_text, ssml_text = _ssml_segment_parts(value)
+                element = _say_with_voice(
+                    gather.say,
+                    plain_text,
+                    preferred_voice=voice,
+                    language=language,
+                    call_sid=call_sid,
+                )
+                if element is not None:
+                    _append_ssml(element, ssml_text)
             elif kind == "pause":
                 gather.pause(length=value)
     return str(response)
 
 
 def create_goodbye_twiml(
-    message: str,
+    message: PromptPayload,
     *,
     voice: str,
     language: str,
     call_sid: Optional[str] = None,
 ) -> str:
     response = VoiceResponse()
-    _say_segments(
-        response.say,
-        message,
-        voice=voice,
-        language=language,
-        call_sid=call_sid,
-    )
+    payload = message
+    if isinstance(payload, str):
+        _say_segments(
+            response.say,
+            payload,
+            voice=voice,
+            language=language,
+            call_sid=call_sid,
+        )
+    else:
+        for kind, value in payload:
+            if kind == "say":
+                _say_segments(
+                    response.say,
+                    value,
+                    voice=voice,
+                    language=language,
+                    call_sid=call_sid,
+                )
+            elif kind == "ssml":
+                plain_text, ssml_text = _ssml_segment_parts(value)
+                element = _say_with_voice(
+                    response.say,
+                    plain_text,
+                    preferred_voice=voice,
+                    language=language,
+                    call_sid=call_sid,
+                )
+                if element is not None:
+                    _append_ssml(element, ssml_text)
+            elif kind == "pause":
+                response.pause(length=value)
     response.pause(length="0.4")
     response.hangup()
     return str(response)
@@ -423,10 +460,107 @@ def _remember_caller_line(state: Dict[str, Any], text: str) -> None:
             transcript_add(call_sid, "Caller", text)
 
 
+def _ssml_segment_parts(value: Union[str, Tuple[str, str]]) -> Tuple[str, str]:
+    if isinstance(value, tuple):
+        return value
+    cleaned = re.sub(r"<[^>]+>", " ", value)
+    plain_text = " ".join(cleaned.split()).strip()
+    return plain_text, value
+
+
+def _append_ssml(element: Any, ssml_text: str) -> None:
+    stripped = (ssml_text or "").strip()
+    if not stripped:
+        return
+    try:
+        node = fromstring(stripped)
+    except ParseError:
+        return
+    if hasattr(element, "xml") and callable(element.xml):
+        _apply_ssml_to_twilio(element, node)
+        return
+    element.append(node)
+
+
+def _apply_ssml_to_twilio(target: Any, node: Any) -> None:
+    def _append_text(container: Any, text: Optional[str]) -> None:
+        if not text:
+            return
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        container.append(cleaned)
+
+    tag = getattr(node, "tag", "").lower()
+    if tag == "speak":
+        _append_text(target, getattr(node, "text", None))
+        for child in list(node):
+            _apply_ssml_to_twilio(target, child)
+            _append_text(target, getattr(child, "tail", None))
+        return
+
+    if tag == "prosody":
+        kwargs: Dict[str, Any] = {}
+        rate = node.attrib.get("rate")
+        pitch = node.attrib.get("pitch")
+        if rate:
+            kwargs["rate"] = rate
+        if pitch:
+            kwargs["pitch"] = pitch
+        with target.prosody(**kwargs) as prosody:
+            _append_text(prosody, getattr(node, "text", None))
+            for child in list(node):
+                _apply_ssml_to_twilio(prosody, child)
+                _append_text(prosody, getattr(child, "tail", None))
+        return
+
+    if tag == "break":
+        kwargs: Dict[str, Any] = {}
+        time_value = node.attrib.get("time")
+        strength = node.attrib.get("strength")
+        if time_value:
+            kwargs["time"] = time_value
+        if strength:
+            kwargs["strength"] = strength
+        target.break_(**kwargs)
+        return
+
+    if tag == "say-as":
+        kwargs: Dict[str, Any] = {}
+        interpret = node.attrib.get("interpret-as")
+        role = node.attrib.get("role")
+        fmt = node.attrib.get("format")
+        if interpret:
+            kwargs["interpret_as"] = interpret
+        if role:
+            kwargs["role"] = role
+        if fmt:
+            kwargs["format"] = fmt
+        words = (getattr(node, "text", "") or "").strip()
+        if words:
+            target.say_as(words, **kwargs)
+        for child in list(node):
+            _apply_ssml_to_twilio(target, child)
+            _append_text(target, getattr(child, "tail", None))
+        return
+
+    _append_text(target, getattr(node, "text", None))
+    for child in list(node):
+        _apply_ssml_to_twilio(target, child)
+        _append_text(target, getattr(child, "tail", None))
+
+
 def _prompt_to_text(prompt: PromptPayload) -> str:
     if isinstance(prompt, str):
         return prompt
-    return " ".join(part for kind, part in prompt if kind == "say")
+    parts: list[str] = []
+    for kind, part in prompt:
+        if kind == "say":
+            parts.append(part)
+        elif kind == "ssml":
+            plain_text, _ = _ssml_segment_parts(part)
+            parts.append(plain_text)
+    return " ".join(piece for piece in parts if piece).strip()
 
 
 def _with_ack(text: str, chance: float = 0.7) -> str:
@@ -522,9 +656,16 @@ def _respond_with_goodbye(state: Dict[str, Any]) -> Response:
         "Ending call",
         extra={"call_sid": state.get("call_sid"), "goodbye_text": message},
     )
+    ssml = textwrap.dedent(
+        f"""
+        <speak>
+          <prosody rate="medium" pitch="+1%">{message}</prosody>
+        </speak>
+        """
+    ).strip()
     return _twiml_response(
         create_goodbye_twiml(
-            message,
+            [("ssml", (message, ssml))],
             voice=_get_active_voice(),
             language=LANGUAGE,
             call_sid=state.get("call_sid"),
@@ -582,9 +723,37 @@ def _booking_time_prompt(date: str, slots: Sequence[str]) -> PromptPayload:
             0.7,
         )
         return nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.5)
+    spoken_times = [nlp.hhmm_to_12h(slot) for slot in slots if slot]
+    if not spoken_times:
+        pretty_day = nlp.human_day_phrase(date)
+        base = _with_ack(
+            f"On {date}, {pretty_day}, we have {joined}. Which time works for you?",
+            0.9,
+        )
+        return nlp.maybe_prefix_with_filler(base, THINKING_FILLERS, chance=0.8)
     pretty_day = nlp.human_day_phrase(date)
-    base = _with_ack(f"On {date}, {pretty_day}, we have {joined}. Which time works for you?", 0.9)
-    return nlp.maybe_prefix_with_filler(base, THINKING_FILLERS, chance=0.8)
+    times_spoken = ", ".join(spoken_times)
+    detailed_times = ", ".join(
+        f"{nlp.hhmm_to_12h(slot)} at {slot}"
+        for slot in slots
+        if slot
+    )
+    ssml = textwrap.dedent(
+        f"""
+        <speak>
+          <prosody rate="medium" pitch="+2%">
+            On {pretty_day}, {date}, I can do <break time="150ms"/>{times_spoken}. <break time="200ms"/>
+            That's {detailed_times}. <break time="180ms"/>
+            Which time works for you?
+          </prosody>
+        </speak>
+        """
+    ).strip()
+    plain_text = (
+        f"On {pretty_day}, {date}, I can do {times_spoken}. "
+        f"That's {detailed_times}. Which time works for you?"
+    )
+    return [("ssml", (plain_text, ssml))]
 
 
 def _booking_time_reprompt(slots: Sequence[str]) -> PromptPayload:
@@ -631,17 +800,50 @@ def _booking_confirm_prompt(state: Dict[str, Any]) -> PromptPayload:
 
 def _booking_confirmed_message(state: Dict[str, Any]) -> PromptPayload:
     date_value = state.get("booking_date")
-    human_date = nlp.human_day_phrase(date_value) if date_value else ""
     time_value = state.get("booking_time")
-    human_time = nlp.human_time_phrase(time_value) if time_value else ""
-    msg = random.choice(CONFIRM_TEMPLATES).format(
-        date=human_date or (date_value or ""),
-        time=human_time or (time_value or ""),
-        type=state["booking_appt_type"],
-        name=state["caller_name"] or "",
+    appointment_type = state.get("booking_appt_type") or "appointment"
+    appointment_phrase = f"{appointment_type} appointment" if appointment_type else "appointment"
+    time_ssml = time_value or (nlp.hhmm_to_12h(time_value or "") or "")
+    date_ssml = ""
+    if date_value:
+        try:
+            date_ssml = datetime.strptime(date_value, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            date_ssml = date_value
+    else:
+        date_ssml = ""
+    human_date = nlp.human_day_phrase(date_value) if date_value else ""
+    human_hint = f" That's {human_date}." if human_date else ""
+    if time_ssml:
+        time_markup = f"<say-as interpret-as=\"time\">{time_ssml}</say-as>"
+    else:
+        time_markup = "the time we discussed"
+    if date_ssml:
+        date_markup = f"<say-as interpret-as=\"date\" format=\"dmy\">{date_ssml}</say-as>"
+    else:
+        date_markup = "the day we discussed"
+    if time_value:
+        time_plain_text = f"{nlp.hhmm_to_12h(time_value)} ({time_value})"
+    else:
+        time_plain_text = "the time we discussed"
+    date_plain_text = date_value or "the day we discussed"
+    ssml = textwrap.dedent(
+        f"""
+        <speak>
+          <prosody rate="medium" pitch="+2%">
+            Great. <break time="120ms"/>
+            I’ve booked your {appointment_phrase.lower()} at {time_markup}
+            on {date_markup}.{human_hint}
+          </prosody>
+        </speak>
+        """
+    ).strip()
+    plain_text = (
+        f"Great. I've booked your {appointment_phrase.lower()} at {time_plain_text} "
+        f"on {date_plain_text}.{human_hint}"
     )
     parts: list[PromptSegment] = []
-    parts.append(("say", _with_ack(msg, 0.6)))
+    parts.append(("ssml", (plain_text, ssml)))
     if not state.get("consent_said"):
         parts.append(("say", CONSENT_LINE))
         state["consent_said"] = True

@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback below
 if TwilioVoiceResponse is not None:  # pragma: no cover - defer to real implementation when available
     VoiceResponse = TwilioVoiceResponse  # type: ignore
 else:
-    from xml.etree.ElementTree import Element, SubElement, tostring
+    from xml.etree.ElementTree import Element, SubElement, tostring, fromstring, ParseError
 
     def _twilio_attr(name: str) -> str:
         parts = name.split("_")
@@ -30,6 +30,19 @@ else:
             return "true" if value else "false"
         return str(value)
 
+    def _set_say_content(element: Element, message: str) -> None:
+        stripped = (message or "").strip()
+        if stripped.startswith("<"):
+            try:
+                node = fromstring(stripped)
+            except ParseError:
+                element.text = message
+            else:
+                element.append(node)
+                return
+        element.text = message
+
+
     class _Gather:
         def __init__(self, element: Element) -> None:
             self._element = element
@@ -40,7 +53,7 @@ else:
                 say.set("voice", voice)
             if language:
                 say.set("language", language)
-            say.text = message
+            _set_say_content(say, message)
             return say
 
         def pause(self, length: Optional[str] = None) -> Element:
@@ -68,7 +81,7 @@ else:
                 say.set("voice", voice)
             if language:
                 say.set("language", language)
-            say.text = message
+            _set_say_content(say, message)
             return say
 
         def pause(self, length: Optional[str] = None) -> Element:
