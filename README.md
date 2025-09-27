@@ -66,6 +66,26 @@ prices: "A routine check-up is forty five pounds. Hygiene is sixty five. Whiteni
 
 Update these values to match your practice. `TTS_VOICE`/`TTS_LANG` in the environment always take precedence; if neither config nor environment specify a voice the app falls back to `alice` / `en-GB`.
 
+### Profiles (Dental vs Mechanic)
+
+The dental receptionist is enabled by default. To switch to the mechanic workshop persona:
+
+1. Open `.env` and set:
+
+   ```bash
+   PRACTICE_PROFILE=mechanic
+   ```
+
+2. Restart the server so the new config loads:
+
+   ```bash
+   uvicorn main:app --host 0.0.0.0 --port 5173 --reload
+   ```
+
+3. Update `data/schedule.csv` with garage slots if required.
+
+The bot will now speak as **Swift Auto Care**, offer MOT/service/tyre information, and reuse the same scheduling flow.
+
 ## Running locally
 
 ```bash

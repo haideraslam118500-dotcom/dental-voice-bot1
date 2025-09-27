@@ -17,12 +17,15 @@ from xml.etree.ElementTree import ParseError, fromstring
 
 from app.config import get_settings
 from app import nlp, schedule
+import app.dialogue as dialogue_module
 from app.dialogue import (
     DISCLAIMER_LINE,
     GREETINGS,
     THINKING_FILLERS,
+    consent_snippet,
     describe_day,
     format_slot_time,
+    info_for_intent,
     pick_clarifier,
     pick_holder,
     pick_name_clarifier,
@@ -48,11 +51,23 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 ensure_storage()
 
+if settings.practice.openings:
+    GREETINGS[:] = list(settings.practice.openings)
+    dialogue_module.GREETINGS[:] = list(settings.practice.openings)
+if settings.practice.thinking_fillers:
+    THINKING_FILLERS[:] = list(settings.practice.thinking_fillers)
+    dialogue_module.THINKING_FILLERS[:] = list(settings.practice.thinking_fillers)
+if settings.practice.backchannels:
+    dialogue_module.HOLDERS[:] = list(settings.practice.backchannels)
+if settings.practice.clarifiers:
+    dialogue_module.CLARIFIERS[:] = list(settings.practice.clarifiers)
+
 VOICE = settings.voice
 LANGUAGE = settings.language
 MAX_SPEECH_CHARS = 110
 CONSENT_LINE = (
-    "By providing your number, you agree to receive appointment confirmations and reminders."
+    (settings.practice.consent_lines or {}).get("short_booking")
+    or "By providing your number, you agree to receive appointment confirmations and reminders."
 )
 
 _voice_lock = Lock()
@@ -81,6 +96,18 @@ SOFT_REPROMPTS = [
     "Sorry, repeat that for me?",
 ]
 
+GARAGE_INFO_INTENTS = {
+    "prices",
+    "mot_info",
+    "service_info",
+    "tyre_info",
+    "diagnostics_info",
+    "oil_info",
+    "brake_info",
+    "quote",
+    "recovery",
+}
+
 INFO_LINES = {
     "hours": settings.practice.hours,
     "address": settings.practice.address,
@@ -103,11 +130,14 @@ SERVICE_KEY_TO_APPT = {
 
 APPT_TO_SERVICE_KEY = {v: k for k, v in SERVICE_KEY_TO_APPT.items()}
 
-GOODBYES = [
-    "Okay, have a lovely day. Goodbye.",
-    "Thanks for calling. Take care, goodbye.",
-    "Alright, appreciate the call. Goodbye.",
-]
+GOODBYES = list(
+    settings.practice.closings
+    or [
+        "Okay, have a lovely day. Goodbye.",
+        "Thanks for calling. Take care, goodbye.",
+        "Alright, appreciate the call. Goodbye.",
+    ]
+)
 _goodbye_cycle = cycle(GOODBYES)
 
 NEGATIVE_RESPONSES = {
@@ -845,7 +875,11 @@ def _booking_confirmed_message(state: Dict[str, Any]) -> PromptPayload:
     parts: list[PromptSegment] = []
     parts.append(("ssml", (plain_text, ssml)))
     if not state.get("consent_said"):
-        parts.append(("say", CONSENT_LINE))
+        snippet = consent_snippet(settings.practice)
+        if snippet:
+            parts.append(("say", snippet))
+        if CONSENT_LINE:
+            parts.append(("say", CONSENT_LINE))
         state["consent_said"] = True
     parts.append(("say", _with_ack(ANYTHING_ELSE_PROMPT, 0.6)))
     return parts
@@ -1018,11 +1052,32 @@ def _start_booking(state: Dict[str, Any], initial_text: Optional[str] = None) ->
 def _handle_primary_intent(
     state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
 ) -> Response:
+    if intent == "quote" and not settings.practice.price_items:
+        intent = "prices"
     lowered = user_input.lower().strip()
     if state.get("awaiting_price_service"):
         return _handle_price_service_follow_up(state, user_input)
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
+    if intent in GARAGE_INFO_INTENTS and settings.practice.price_items:
+        info_text = info_for_intent(settings.practice, intent).strip()
+        if info_text:
+            follow_up = (
+                "Would you like me to arrange that?"
+                if intent == "recovery"
+                else "Would you like to book that in?"
+            )
+            message = _with_ack(f"{info_text} {follow_up}".strip(), 0.85)
+            payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
+            state["intent"] = intent
+            state["stage"] = "follow_up"
+            state["retries"] = 0
+            state.pop("awaiting_price_service", None)
+            logger.info(
+                "Providing information",
+                extra={"call_sid": state.get("call_sid"), "intent": intent},
+            )
+            return _respond_with_gather(state, payload)
     if intent == "prices":
         service_key = nlp.detect_service(user_input) or state.get("last_service")
         if service_key:
@@ -1054,11 +1109,32 @@ def _handle_primary_intent(
 def _handle_follow_up(
     state: Dict[str, Any], intent: Optional[str], user_input: str, confidence: Optional[float] = None
 ) -> Response:
+    if intent == "quote" and not settings.practice.price_items:
+        intent = "prices"
     lowered = user_input.lower().strip()
     if state.get("awaiting_price_service"):
         return _handle_price_service_follow_up(state, user_input)
     if intent == "goodbye" or lowered in NEGATIVE_RESPONSES:
         return _respond_with_goodbye(state)
+    if intent in GARAGE_INFO_INTENTS and settings.practice.price_items:
+        info_text = info_for_intent(settings.practice, intent).strip()
+        if info_text:
+            follow_up = (
+                "Would you like me to arrange that?"
+                if intent == "recovery"
+                else "Would you like to book that in?"
+            )
+            message = _with_ack(f"{info_text} {follow_up}".strip(), 0.85)
+            payload = nlp.maybe_prefix_with_filler(message, THINKING_FILLERS, chance=0.4)
+            state["intent"] = intent
+            state["stage"] = "follow_up"
+            state["retries"] = 0
+            state.pop("awaiting_price_service", None)
+            logger.info(
+                "Providing information",
+                extra={"call_sid": state.get("call_sid"), "intent": intent},
+            )
+            return _respond_with_gather(state, payload)
     if intent == "availability":
         if state.get("intent") != "booking":
             _reset_booking_context(state)

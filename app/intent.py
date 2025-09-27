@@ -125,6 +125,13 @@ PRICE_KEYWORDS = {
     "pricing",
 }
 
+QUOTE_KEYWORDS = {
+    "quote",
+    "how much",
+    "price up",
+    "rough price",
+}
+
 BOOKING_KEYWORDS = {
     "book",
     "booking",
@@ -135,11 +142,24 @@ BOOKING_KEYWORDS = {
     "make booking",
     "slot",
     "slots",
+    "slot in",
+    "get me in",
+    "can you fit me in",
     "reserve",
     "visit",
     "buk",
     "buking",
     "buk appointment",
+}
+
+GARAGE_INTENT_KEYWORDS: dict[str, set[str]] = {
+    "mot_info": {"mot", "m o t"},
+    "service_info": {"service", "servicing", "full service", "interim service"},
+    "tyre_info": {"tyre", "tyres", "tire", "tires", "puncture", "wheel"},
+    "diagnostics_info": {"diagnostic", "diagnostics", "engine light", "fault code", "obd"},
+    "oil_info": {"oil change", "oil and filter", "oil & filter"},
+    "brake_info": {"brake", "brakes", "pads", "discs"},
+    "recovery": {"breakdown", "towing", "tow truck", "recovery"},
 }
 
 GOODBYE_KEYWORDS = {
@@ -190,6 +210,7 @@ def classify(speech: Optional[str]) -> Optional[str]:
         return "goodbye"
 
     price_intent = _any_fuzzy(text, PRICE_KEYWORDS, max_dist=1)
+    quote_intent = _any_fuzzy(text, QUOTE_KEYWORDS, max_dist=1)
     booking_intent = _any_fuzzy(text, BOOKING_KEYWORDS, max_dist=1)
     availability_intent = _any_fuzzy(text, AVAILABILITY_KEYWORDS, max_dist=2)
     address_intent = _any_fuzzy(text, ADDRESS_KEYWORDS, max_dist=2)
@@ -201,6 +222,12 @@ def classify(speech: Optional[str]) -> Optional[str]:
         for keyword in ("book", "booking", "appointment", "schedule", "reserve", "make booking")
     )
 
+    garage_hint = any(_any_fuzzy(text, keywords, max_dist=1) for keywords in GARAGE_INTENT_KEYWORDS.values())
+
+    if quote_intent and not booking_intent:
+        if not garage_hint:
+            return "prices"
+        return "quote"
     if price_intent and not booking_intent:
         return "prices"
     if booking_intent and not availability_intent:
@@ -213,6 +240,9 @@ def classify(speech: Optional[str]) -> Optional[str]:
         return "availability"
     if hours_intent:
         return "hours"
+    for intent_name, keywords in GARAGE_INTENT_KEYWORDS.items():
+        if _any_fuzzy(text, keywords, max_dist=1):
+            return intent_name
     if price_intent:
         return "prices"
     if affirm_intent:
