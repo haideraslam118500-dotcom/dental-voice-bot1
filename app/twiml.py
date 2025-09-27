@@ -5,6 +5,16 @@ from typing import Optional
 from app.twilio_compat import VoiceResponse
 
 
+def say_ssml(ssml: str) -> str:
+    """Return a TwiML <Say> block containing raw SSML content."""
+    from app.config import get_settings
+
+    settings = get_settings()
+    voice = settings.practice.voice or settings.voice or "Polly.Brian"
+    language = settings.practice.language or settings.language or "en-GB"
+    return f'<Say voice="{voice}" language="{language}">{ssml}</Say>'
+
+
 def _gather(
     prompt: str,
     voice: str,
@@ -76,6 +86,7 @@ def respond_with_goodbye(message: str, voice: str, language: str) -> str:
 
 
 __all__ = [
+    "say_ssml",
     "gather_for_intent",
     "gather_for_follow_up",
     "gather_for_name",
