@@ -8,6 +8,7 @@ from typing import Optional
 
 from app import nlp, schedule
 from app.intent import extract_appt_type
+from app.config import PracticeConfig
 
 
 log = logging.getLogger("app.dialogue")
@@ -118,6 +119,74 @@ CLOSINGS = [
     "Alright, appreciate the call. Take care — goodbye.",
     "Thanks for calling Oak Dental. Bye for now.",
 ]
+
+
+def greeting(practice: PracticeConfig) -> str:
+    name = getattr(practice, "practice_name", "Oak Dental") or "Oak Dental"
+    openings = getattr(practice, "openings", None) or GREETINGS
+    if openings:
+        return openings[0]
+    return f"Hi, thanks for calling {name}. How can I help today?"
+
+
+def info_for_intent(practice: PracticeConfig, intent: str) -> str:
+    prices = getattr(practice, "price_items", {}) or {}
+    hours = (getattr(practice, "hours", "") or HOURS_LINE).strip()
+    address = (getattr(practice, "address", "") or ADDRESS_LINE).strip()
+
+    if intent == "hours":
+        return hours or HOURS_LINE
+    if intent == "address":
+        return address or ADDRESS_LINE
+    if intent == "prices":
+        price_text = (getattr(practice, "prices", "") or "").strip()
+        if price_text:
+            return price_text
+        if prices:
+            return " ".join(value for value in prices.values() if value).strip()
+        return PRICES_LINE
+
+    if intent in {
+        "mot_info",
+        "service_info",
+        "tyre_info",
+        "diagnostics_info",
+        "oil_info",
+        "brake_info",
+        "quote",
+        "recovery",
+    }:
+        interim = prices.get("interim_service")
+        full = prices.get("full_service")
+        service_summary = " ".join(part for part in [interim, full] if part) or (
+            "Interim service from one-forty-nine. Full service from two-forty-nine."
+        )
+        mapping = {
+            "mot_info": prices.get("mot") or "MOT is fifty-five pounds.",
+            "service_info": service_summary,
+            "tyre_info": prices.get("tyre") or "Tyres fitted from fifty-five each.",
+            "diagnostics_info": prices.get("diagnostics") or "Diagnostics check is sixty pounds.",
+            "oil_info": prices.get("oil_change") or "Oil and filter change from eighty-five pounds.",
+            "brake_info": prices.get("brake_pads") or "Front brake pads from one-thirty, parts and labour.",
+            "quote": (
+                prices.get("quote")
+                or (
+                    "Happy to price that — what car and what’s needed?"
+                    if prices
+                    else (getattr(practice, "prices", "") or PRICES_LINE)
+                )
+            ),
+            "recovery": prices.get("recovery")
+            or "We can help arrange a tow or recovery if you need one.",
+        }
+        return mapping[intent]
+
+    return ""
+
+
+def consent_snippet(practice: PracticeConfig) -> str:
+    snippets = getattr(practice, "consent_snippets", None) or []
+    return (snippets[0] if snippets else "").strip()
 
 CONFIRM_TEMPLATES = [
     "Perfect, I’ll book you for {date} at {time} for a {type}, under {name}.",

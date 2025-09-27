@@ -1,0 +1,56 @@
+# Practice profile: Mechanic workshop
+practice_name: "Swift Auto Care"
+voice: "Polly.Brian"
+language: "en-GB"
+
+openings:
+  - "Hi, Swift Auto Care. How can I help today?"
+  - "Hello, Swift Auto Care speaking. What do you need done on the car?"
+  - "Thanks for calling Swift Auto Care. Are you after an MOT, a service, or a repair?"
+
+backchannels:
+  - "Okay, sure."
+  - "No problem."
+  - "Right, I follow."
+  - "Yeah, that’s fine."
+  - "Got it."
+  - "All good."
+  - "Let me check that."
+  - "One sec."
+  - "Absolutely."
+  - "Sounds good."
+
+clarifiers:
+  - "Could you say that again, please?"
+  - "Do you mean an MOT, a service, tyres, or something else?"
+  - "Was that for this week or next week?"
+  - "What day works for you?"
+
+closings:
+  - "Okay, thanks for calling Swift Auto Care. Goodbye."
+  - "Alright, appreciate the call. Take care, goodbye."
+  - "Thanks for ringing. Have a good one — goodbye."
+
+hours: "We’re open Monday to Friday eight to six, and Saturday nine to two. Closed Sundays and bank holidays."
+address: "We’re on 24 Station Road, Oakford, OX1 4CD — opposite the petrol station."
+prices:
+  mot: "MOT is fifty-five pounds."
+  interim_service: "An interim service starts at one hundred and forty-nine pounds."
+  full_service: "A full service starts at two hundred and forty-nine pounds."
+  diagnostics: "Diagnostics check is sixty pounds."
+  oil_change: "Oil and filter change from eighty-five pounds."
+  brake_pads: "Front brake pads from one hundred and thirty pounds, parts and labour."
+  tyre: "Tyres fitted from fifty-five pounds each, depending on size."
+  aircon: "Air-con re-gas is sixty-five pounds."
+  battery: "Battery replacement from ninety pounds, depending on model."
+
+consent_lines:
+  short_booking: "By giving your number, you agree we can send booking confirmations and reminders by SMS."
+  when_collecting: "When you share your number, you agree to receive appointment texts for this booking."
+  website_form: "Numbers entered on our website agree to SMS confirmations and reminders."
+
+# phrases the bot may use when confirming consent naturally (it will choose 1)
+consent_snippets:
+  - "I’ll text your confirmation. We use your number for booking updates only."
+  - "We’ll send a reminder by text — that okay?"
+  - "I’ll pop you a quick SMS with the details."

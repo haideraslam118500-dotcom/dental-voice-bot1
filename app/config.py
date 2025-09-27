@@ -10,7 +10,10 @@ from yaml import YAMLError, safe_load
 from dotenv import load_dotenv
 
 
-PRACTICE_CONFIG_PATH = Path("config/practice.yml")
+ROOT = Path(__file__).resolve().parent.parent
+PRACTICE_PROFILE = os.getenv("PRACTICE_PROFILE", "dental").strip().lower()
+_profiled_config = ROOT / "config" / f"practice_{PRACTICE_PROFILE}.yml"
+PRACTICE_CONFIG_PATH = _profiled_config if _profiled_config.exists() else ROOT / "config" / "practice.yml"
 FALLBACK_VOICE = "alice"
 FALLBACK_LANGUAGE = "en-GB"
 
@@ -33,6 +36,14 @@ class PracticeConfig:
     address: str
     prices: str
     service_prices: dict[str, str]
+    price_items: dict[str, str]
+    openings: list[str]
+    backchannels: list[str]
+    thinking_fillers: list[str]
+    clarifiers: list[str]
+    closings: list[str]
+    consent_lines: dict[str, str]
+    consent_snippets: list[str]
     no_speech_timeout: int
     max_silence_reprompts: int
 
@@ -53,6 +64,58 @@ def _load_practice_config() -> PracticeConfig:
             "whitening": "Whitening starts from two hundred and fifty pounds.",
             "extraction": "Tooth extraction is one hundred and twenty pounds.",
         },
+        "price_items": {},
+        "openings": [
+            "Hi, thanks for calling Oak Dental — how can I help today?",
+            "Hello, you’ve reached Oak Dental. What can I do for you?",
+            "Oak Dental, good to hear from you — how can I help?",
+            "Hi there, Oak Dental speaking. What do you need today?",
+            "Thanks for calling Oak Dental. How can I help?",
+        ],
+        "backchannels": [
+            "Okay, that's fine.",
+            "Yeah, sure.",
+            "Hmm, okay.",
+            "Right, I understand.",
+            "No problem.",
+            "Alright.",
+            "Got it.",
+            "Makes sense.",
+            "Absolutely.",
+            "Sure thing.",
+            "Okay, noted.",
+            "All good.",
+            "Bear with me a sec.",
+            "One moment.",
+            "Let me just check.",
+            "No worries.",
+            "That’s fine.",
+        ],
+        "thinking_fillers": [
+            "Okay, one moment while I check.",
+            "Alright, let me have a quick look.",
+            "No worries, give me a second.",
+            "Right, I'm checking that now.",
+            "Okay, let's see what we've got.",
+            "Sure, I’m pulling that up.",
+        ],
+        "clarifiers": [
+            "Sorry, could you repeat that in a few words?",
+            "I didn’t quite catch that — was that a booking, our hours, or prices?",
+            "One more time please — which day did you want?",
+            "Could you say that slowly for me?",
+        ],
+        "closings": [
+            "Okay, thanks for calling. Have a lovely day. Goodbye.",
+            "Alright, appreciate the call. Take care — goodbye.",
+            "Thanks for calling Oak Dental. Bye for now.",
+        ],
+        "consent_lines": {
+            "short_booking": (
+                "By providing your number, you agree to receive appointment confirmations and reminders."
+            )
+        },
+        "consent_snippets": [],
         "no_speech_timeout": 5,
         "max_silence_reprompts": 2,
     }
@@ -70,14 +133,35 @@ def _load_practice_config() -> PracticeConfig:
             )
         defaults.update({k: v for k, v in loaded.items() if v is not None})
 
+    raw_prices = defaults.get("prices", "")
+    price_items: dict[str, str]
+    if isinstance(raw_prices, dict):
+        price_items = {str(k): str(v) for k, v in raw_prices.items()}
+        highlight_keys = ("mot", "interim_service", "full_service")
+        highlights = [price_items.get(key) for key in highlight_keys if price_items.get(key)]
+        price_text = " ".join(value for value in highlights if value).strip()
+        if not price_text:
+            price_text = " ".join(value for value in price_items.values() if value).strip()
+    else:
+        price_text = str(raw_prices or "")
+        price_items = {str(k): str(v) for k, v in (defaults.get("price_items") or {}).items()}
+
     return PracticeConfig(
         practice_name=str(defaults.get("practice_name", "Oak Dental")),
         voice=defaults.get("voice"),
         language=defaults.get("language"),
         hours=str(defaults.get("hours", "")),
         address=str(defaults.get("address", "")),
-        prices=str(defaults.get("prices", "")),
+        prices=price_text,
         service_prices=dict(defaults.get("service_prices", {}) or {}),
+        price_items=price_items,
+        openings=list(defaults.get("openings", []) or []),
+        backchannels=list(defaults.get("backchannels", []) or []),
+        thinking_fillers=list(defaults.get("thinking_fillers", []) or []),
+        clarifiers=list(defaults.get("clarifiers", []) or []),
+        closings=list(defaults.get("closings", []) or []),
+        consent_lines=dict(defaults.get("consent_lines", {}) or {}),
+        consent_snippets=list(defaults.get("consent_snippets", []) or []),
         no_speech_timeout=int(defaults.get("no_speech_timeout", 5) or 5),
         max_silence_reprompts=int(defaults.get("max_silence_reprompts", 2) or 2),
     )
