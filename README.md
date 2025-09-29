@@ -113,6 +113,12 @@ Copy the HTTPS forwarding URL (for example `https://random.ngrok.app`) for the T
 Point both Twilio numbers to the same webhook:
 * Voice (POST): `https://YOUR-NGROK.ngrok-free.app/twilio/voice`
 * Status (POST): `https://YOUR-NGROK.ngrok-free.app/status`
+
+- Example mapping: `+441908024355` ⇒ dental (**Oak Dental**), `+441908024808` ⇒ mechanic (**Swift Auto Care**).
+- Note: both numbers must point to the same webhooks:
+  - Voice: `https://YOUR-ID.ngrok-free.app/twilio/voice`
+  - Status: `https://YOUR-ID.ngrok-free.app/status`
+
 Numbers are mapped in `config/tenants.yml`. Optional per-practice schedules:
 `data/schedule_dental.csv`, `data/schedule_mechanic.csv`. Otherwise `data/schedule.csv` is used.
 Debug: `GET /debug/which-practice?to=+441234567890`

@@ -1,9 +1,7 @@
-# Map inbound 'To' numbers to a practice profile and friendly name.
-# Replace these placeholders with your real Twilio numbers after this PR:
 tenants:
-  "+441111111111":
+  "+441908024355":      # Dentist line
     profile: dental
     practice_name: "Oak Dental"
-  "+442222222222":
+  "+441908024808":      # Mechanic line
     profile: mechanic
     practice_name: "Swift Auto Care"

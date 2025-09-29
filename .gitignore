@@ -226,3 +226,4 @@ data/calls.sqlite
 # Keep schedule files
 !data/schedule.csv
 !data/schedule.xlsx
+!data/schedule_mechanic.csv
