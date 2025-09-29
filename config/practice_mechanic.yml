@@ -1,56 +1,41 @@
-# Practice profile: Mechanic workshop
 practice_name: "Swift Auto Care"
 voice: "Polly.Brian"
 language: "en-GB"
 
 openings:
-  - "Hi, Swift Auto Care. How can I help today?"
-  - "Hello, Swift Auto Care speaking. What do you need done on the car?"
-  - "Thanks for calling Swift Auto Care. Are you after an MOT, a service, or a repair?"
+  - "Hi, Swift Auto Care — how can I help today?"
+  - "Hello, Swift Auto Care. What can I do for you?"
+  - "Swift Auto Care, you're through to the reception. How can I help?"
 
 backchannels:
-  - "Okay, sure."
+  - "Okay, that’s fine."
+  - "Yeah, sure."
+  - "Hmm, okay."
+  - "Right, I understand."
   - "No problem."
-  - "Right, I follow."
-  - "Yeah, that’s fine."
+  - "Alright."
   - "Got it."
-  - "All good."
-  - "Let me check that."
-  - "One sec."
+  - "Makes sense."
   - "Absolutely."
-  - "Sounds good."
-
-clarifiers:
-  - "Could you say that again, please?"
-  - "Do you mean an MOT, a service, tyres, or something else?"
-  - "Was that for this week or next week?"
-  - "What day works for you?"
+  - "Sure thing."
+  - "Okay, noted."
+  - "All good."
 
 closings:
   - "Okay, thanks for calling Swift Auto Care. Goodbye."
-  - "Alright, appreciate the call. Take care, goodbye."
-  - "Thanks for ringing. Have a good one — goodbye."
+  - "Alright, appreciate the call. Goodbye."
+  - "Thanks for calling. Take care, goodbye."
 
-hours: "We’re open Monday to Friday eight to six, and Saturday nine to two. Closed Sundays and bank holidays."
-address: "We’re on 24 Station Road, Oakford, OX1 4CD — opposite the petrol station."
+hours: "We’re open Monday to Friday eight to six, Saturday nine to two. Closed Sundays and bank holidays."
+address: "Unit 3, Trade Park, Oakford, OX1 3CD. Entrance by the grey shutter."
 prices:
   mot: "MOT is fifty-five pounds."
-  interim_service: "An interim service starts at one hundred and forty-nine pounds."
-  full_service: "A full service starts at two hundred and forty-nine pounds."
-  diagnostics: "Diagnostics check is sixty pounds."
-  oil_change: "Oil and filter change from eighty-five pounds."
-  brake_pads: "Front brake pads from one hundred and thirty pounds, parts and labour."
-  tyre: "Tyres fitted from fifty-five pounds each, depending on size."
-  aircon: "Air-con re-gas is sixty-five pounds."
-  battery: "Battery replacement from ninety pounds, depending on model."
+  service_minor: "Minor service starts at one hundred and twenty pounds."
+  service_major: "Major service starts at two hundred and thirty pounds."
+  diagnostics: "Diagnostics is sixty pounds."
+  tyres: "Tyres vary by size — we can quote once we know your vehicle."
+  brakes: "Brake pads and discs vary; we’ll quote after a quick check."
 
 consent_lines:
-  short_booking: "By giving your number, you agree we can send booking confirmations and reminders by SMS."
-  when_collecting: "When you share your number, you agree to receive appointment texts for this booking."
-  website_form: "Numbers entered on our website agree to SMS confirmations and reminders."
-
-# phrases the bot may use when confirming consent naturally (it will choose 1)
-consent_snippets:
-  - "I’ll text your confirmation. We use your number for booking updates only."
-  - "We’ll send a reminder by text — that okay?"
-  - "I’ll pop you a quick SMS with the details."
+  - "By providing your number, you agree to receive booking confirmations and reminders."
+  - "We won’t spam you — just essential updates about your appointment."
